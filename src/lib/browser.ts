@@ -96,9 +96,10 @@ export async function newCtx(browser: Browser, vp: { width: number; height: numb
 
 /** Navigate, wait for network idle plus a settle for preloaders / hero appears, disable CSS smooth scroll. */
 export async function load(page: Page, url: string, settleMs = 2500) {
-  await page.goto(url, { waitUntil: 'networkidle', timeout: 90_000 }).catch(async () => {
-    log('  networkidle timeout, falling back to load');
-    await page.goto(url, { waitUntil: 'load', timeout: 90_000 });
+  await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(async () => {
+    log('  networkidle timeout, falling back to domcontentloaded');
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await page.waitForTimeout(3000);
   });
   await page.waitForTimeout(settleMs);
   await page.evaluate(() => {

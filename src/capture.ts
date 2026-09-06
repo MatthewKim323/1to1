@@ -440,8 +440,14 @@ export async function runCapture(argv: string[]) {
           const hoverAt = sc.frames.at(-1)?.t ?? 4000;
           await page.mouse.move(r2.x + r2.w / 2, r2.y + r2.h / 2, { steps: 10 });
           await page.waitForTimeout(2000);
-          await sc.finish({ description: `4s unhovered, then hover 2s (${l.canvas ? 'canvas' : 'self-animating element'})`, hoverStartMs: hoverAt, targetRect: r2 });
-          hoverAnalysis(name);
+          const fin = await sc.finish({ description: `4s unhovered, then hover 2s (${l.canvas ? 'canvas' : 'self-animating element'})`, hoverStartMs: hoverAt, targetRect: r2 });
+          const mt = JSON.parse(fs.readFileSync(path.join(OUT, 'frames', name, 'motion-timeline.json'), 'utf8'));
+          if (!l.canvas && mt.summary.motionFrames < 20) {
+            // an appear animation or lazy image finishing, not a loop: drop it
+            fs.rmSync(path.join(OUT, 'frames', name), { recursive: true, force: true });
+            delete report.scenarios[name];
+            log(`  [${name}] only ${mt.summary.motionFrames} motion frames in ${fin.frameCount}: transient, dropped`);
+          } else hoverAnalysis(name);
         } catch (e: any) { errors.push(`[${name}] ${e.message}`); try { await sc.finish({ error: e.message }); } catch {} }
       }
     } catch (e: any) { errors.push(`[loops] ${e.message}`); } finally { await closeCtx(ctx); }
@@ -532,7 +538,11 @@ export async function runCapture(argv: string[]) {
     return r.ok;
   };
   try {
-    if (want('static')) for (const vp of vps) await unit(`viewport ${vp.name}`, VIEWPORT_MS, (b) => captureViewport(b, vp));
+    if (want('static')) for (const vp of vps) {
+      // one retry on a fresh browser: a slow CDN or a dead Chromium should not cost a viewport
+      const ok = await unit(`viewport ${vp.name}`, VIEWPORT_MS, (b) => captureViewport(b, vp));
+      if (!ok) { await pool.reset(); log(`  retrying viewport ${vp.name}`); await unit(`viewport ${vp.name} (retry)`, VIEWPORT_MS, (b) => captureViewport(b, vp)); }
+    }
     if (want('assets') && ONLY.includes('assets')) {
       for (const vp of vps) {
         await unit(`assets ${vp.name}`, VIEWPORT_MS, async (b) => {
