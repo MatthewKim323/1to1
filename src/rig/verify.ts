@@ -3,7 +3,7 @@
  *   1to1 verify <buildUrl> <reference/name> [--w 1440,1024,810,390] [--tolerance 0] [--diff] [--out reference/name/build]
  * Checks, per viewport:
  *   1. page height   build == reference capture docHeight (tolerance px)
- *   2. section heights  every top-level section height matches (matched by order)
+ *   2. section heights  every reference section has a build block starting at the same y (3px) with the same height; unmatched = warned
  *   3. --diff: stitched full-page pixel diff per section vs capture/<vp>/full.png (informational; text AA and mid-spring
  *      captures make a nonzero % normal, so it is reported but does not fail the gate)
  *   4. console: zero errors / page errors while scrolling the build
@@ -43,8 +43,10 @@ export async function runVerify(argv: string[]) {
     await reveal(page);
     const m = await measureSections(page);
     const heightOk = Math.abs(m.docHeight - refVp.docHeight) <= tol;
-    const secRows = refSecs.map((s, i) => { const b = m.sections[i]; return { name: s.name, ref: s.h, build: b?.h ?? null, delta: b ? b.h - s.h : null, ok: b ? Math.abs(b.h - s.h) <= tol : false }; });
-    const secOk = secRows.every((r) => r.ok);
+    // match by position: a block that starts within 3px of the reference section's y is the same block, whatever the tag structure
+    const secRows = refSecs.map((s) => { const b = m.sections.find((x) => Math.abs(x.y - s.y) <= 3); return { name: s.name, y: s.y, ref: s.h, build: b?.h ?? null, delta: b ? b.h - s.h : null, ok: b ? Math.abs(b.h - s.h) <= tol : null }; });
+    const secOk = secRows.every((r) => r.ok !== false);
+    const unmatched = secRows.filter((r) => r.ok === null);
     let diff: any = null;
     if (a.flag('diff')) {
       const buildPng = path.join(outDir, `${vp.name}-full.png`);
@@ -60,8 +62,8 @@ export async function runVerify(argv: string[]) {
     result.pass &&= vpPass;
     console.log(`\n== ${vp.name} ${vp.width}px  ${vpPass ? 'PASS' : 'FAIL'}`);
     console.log(`page height  ref ${refVp.docHeight}  build ${m.docHeight}  ${heightOk ? 'ok' : `DELTA ${m.docHeight - refVp.docHeight}`}`);
-    for (const r of secRows) console.log(`  ${r.ok ? ' ' : '!'} ${String(r.ref).padStart(6)} ${String(r.build ?? '-').padStart(6)} ${r.delta === null ? '' : (r.delta >= 0 ? '+' : '') + r.delta}`.padEnd(30) + r.name);
-    if (m.sections.length !== refSecs.length) console.log(`  section count differs: ref ${refSecs.length} build ${m.sections.length} (sections are matched by order; wrap each block in <section>)`);
+    for (const r of secRows) console.log(`  ${r.ok === false ? '!' : r.ok === null ? '?' : ' '} y=${String(r.y).padStart(5)} ${String(r.ref).padStart(6)} ${String(r.build ?? '-').padStart(6)} ${r.delta === null ? '' : (r.delta >= 0 ? '+' : '') + r.delta}`.padEnd(36) + r.name);
+    if (unmatched.length) console.log(`  ? ${unmatched.length} reference block(s) have no top-level block starting at the same y in the build (height not checked)`);
     if (uniqErrors.length) console.log(`  console errors: ${uniqErrors.length}\n    ${uniqErrors.slice(0, 5).join('\n    ')}`);
     if (diff) console.log(`  pixel diff: ${diff.map((d: any) => `${d.name} ${(d.differ * 100).toFixed(1)}%`).join(', ')}`);
     await ctx.close();

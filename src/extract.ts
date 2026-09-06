@@ -15,7 +15,7 @@ import { join, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Page, CDPSession, Request } from 'playwright';
 import { Args, usage } from './lib/args.ts';
-import { VIEWPORTS, launch, newCtx, load, reveal, stitchFullPage, log, withTimeout, closeCtx } from './lib/browser.ts';
+import { VIEWPORTS, newCtx, load, reveal, stitchFullPage, log, withTimeout, closeCtx, BrowserPool, guard } from './lib/browser.ts';
 
 export type Stack = { framework: string; framer: boolean; framerMotion: boolean; webflow: boolean; lenis: boolean; gsap: boolean; three: boolean; spline: boolean; notes: string[] };
 
@@ -39,7 +39,8 @@ export async function runExtract(argv: string[]) {
   log(`extract ${url} -> ${outDir} (headed=${!headless})`);
   for (const d of ['dom', 'screenshots', 'stack', 'tokens', 'motion', 'assets']) await mkdir(join(outDir, d), { recursive: true });
 
-  const browser = await launch(headless);
+  const pool = new BrowserPool(headless);
+  const browser = await pool.get();
   const ctx = await newCtx(browser, VIEWPORTS[0], 1);
   const page = await ctx.newPage();
   const assets = attachAssets(page, outDir);
@@ -72,24 +73,30 @@ export async function runExtract(argv: string[]) {
 
   log('phase 6: revealed full pages');
   const heights: Record<string, number> = {};
+  const errors: string[] = [];
   for (const vp of vps) {
-    const c = await newCtx(browser, vp, 2);
-    const p = await c.newPage();
-    attachAssets(p, outDir, assets);
-    await load(p, url);
-    await reveal(p);
-    const file = join(outDir, 'screenshots', `${vp.name}-full.png`);
-    const r = await stitchFullPage(p, vp.width, vp.height, file, 2);
-    heights[vp.name] = r.docH;
-    log(`  ${vp.name} ${vp.width}x${r.docH} (${r.chunks} chunks)`);
-    await closeCtx(c);
+    const g = await guard(`full page ${vp.name}`, a.num('viewport-timeout', 6 * 60) * 1000, async () => {
+      const b = await pool.get();
+      const c = await newCtx(b, vp, 2);
+      try {
+        const p = await c.newPage();
+        attachAssets(p, outDir, assets);
+        await load(p, url);
+        await reveal(p);
+        const file = join(outDir, 'screenshots', `${vp.name}-full.png`);
+        const r = await stitchFullPage(p, vp.width, vp.height, file, 2);
+        heights[vp.name] = r.docH;
+        log(`  ${vp.name} ${vp.width}x${r.docH} (${r.chunks} chunks)`);
+      } finally { await closeCtx(c); }
+    });
+    if (!g.ok) { errors.push(`[${vp.name}] ${g.reason}`); if (g.timedOut) await pool.reset(); }
   }
 
   await assets.finalize();
   await writeFile(join(outDir, 'stack', 'detected.md'), stackMd(stack), 'utf8');
-  const meta = { url, name, capturedAt: new Date().toISOString(), pageTitle: title, stack, viewports: vps, docHeights: heights, revealMethod: method, unrevealed: unrevealed.length, animationCount: computed.length + cdpAnims.length, assetCount: assets.manifest.length };
+  const meta = { url, name, capturedAt: new Date().toISOString(), pageTitle: title, stack, viewports: vps, docHeights: heights, revealMethod: method, unrevealed: unrevealed.length, animationCount: computed.length + cdpAnims.length, assetCount: assets.manifest.length, errors };
   await writeFile(join(outDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
-  await withTimeout(browser.close(), 15_000, 'browser.close');
+  await pool.close();
   log(`done in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${outDir}`);
   return { outDir, meta };
 }

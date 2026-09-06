@@ -14,7 +14,8 @@
  *   README.md + report.json  sections per viewport with y-ranges, scenario table, caveats
  *
  * usage: 1to1 capture <url> [--out reference] [--name slug] [--only static,frames,assets,rediff] [--viewports 1440,1024,810,390]
- *        [--max-hovers 10] [--hovers hovers.json] [--no-scroll-frames] [--frame-dsf 1]
+ *        [--max-hovers 10] [--hovers hovers.json] [--no-scroll-frames] [--frame-dsf 1] [--viewport-timeout 480] [--scenario-timeout 240]
+ *        Every viewport / scenario runs under a watchdog; a dead or hung browser is relaunched and the run continues (errors listed in README).
  * hovers.json: [{ "name": "primary-button", "selector": "a[data-framer-name='Primary md']", "text": "View projects", "click": false, "secondary": "a:has-text('Buy')" }]
  */
 import fs from 'node:fs';
@@ -23,7 +24,7 @@ import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 import type { Browser, BrowserContext, Page, CDPSession } from 'playwright';
 import { Args, usage } from './lib/args.ts';
-import { VIEWPORTS, launch, newCtx, load, reveal, revealPass, stitchFullPage, cropFromFull, LAYOUT_JS, detectSections, type Section, log, sleep, withTimeout, closeCtx } from './lib/browser.ts';
+import { VIEWPORTS, newCtx, load, reveal, revealPass, stitchFullPage, cropFromFull, LAYOUT_JS, detectSections, type Section, log, sleep, withTimeout, closeCtx, BrowserPool, guard } from './lib/browser.ts';
 import { slugFromUrl } from './extract.ts';
 
 const DSF = 2;
@@ -313,27 +314,35 @@ export async function runCapture(argv: string[]) {
     return bb ? { x: bb.x, y: bb.y, w: bb.width, h: bb.height } : null;
   }
 
-  /** Interactive elements spread across the page: pointer-cursor links/buttons, deduped by text, plus accordion-like triggers. */
+  /** Interactive elements spread across the page: real links / buttons / triggers, ranked buttons > cards > nav links > other, deduped by name + text. */
   const AUTO_HOVERS_JS = `((max) => {
+    const generic = /^(desktop|tablet|phone|mobile|container|content|wrapper|default|main|page|icon|variant \\d+|frame|group|stack|row|column)$/i;
+    const ownName = (el) => { const n = el.getAttribute('data-framer-name'); return n && !generic.test(n) ? n : null; };
+    const nearName = (el) => { let e = el; for (let i = 0; i < 3 && e; i++, e = e.parentElement) { const n = e.getAttribute && e.getAttribute('data-framer-name'); if (n && !generic.test(n)) return n; } return null; };
     const seen = new Set(); const out = [];
-    const els = Array.from(document.querySelectorAll('a, button, [role="button"], [tabindex]:not([tabindex="-1"]), [aria-expanded]'));
-    for (const el of els) {
+    for (const el of document.querySelectorAll('a[href], button, [role="button"], [aria-expanded]')) {
       const cs = getComputedStyle(el); const r = el.getBoundingClientRect();
       if (r.width < 24 || r.height < 16 || cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
-      if (cs.position === 'fixed') continue;
+      let fixed = false; for (let e = el; e; e = e.parentElement) { if (getComputedStyle(e).position === 'fixed') { fixed = true; break; } }
+      if (fixed) continue;
       const text = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
-      const fname = el.getAttribute('data-framer-name') || el.closest('[data-framer-name]')?.getAttribute('data-framer-name') || '';
-      const key = (fname + '|' + text).toLowerCase();
-      if (seen.has(key)) continue; seen.add(key);
-      const isTrigger = el.hasAttribute('aria-expanded') || /trigger|accordion|faq|toggle|question/i.test(fname + ' ' + el.className);
+      const own = ownName(el), near = nearName(el);
       const hasImg = !!el.querySelector('img, video');
-      const sec = el.closest('section, footer, header, nav');
-      const secName = sec ? (sec.getAttribute('data-framer-name') || sec.tagName.toLowerCase()) : '';
-      out.push({ name: (fname || text || el.tagName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || el.tagName.toLowerCase(), text: text || undefined, framerName: fname || undefined, y: Math.round(r.top + scrollY), h: Math.round(r.height), w: Math.round(r.width), click: isTrigger, card: hasImg, section: secName, tag: el.tagName.toLowerCase() });
+      const isTrigger = el.hasAttribute('aria-expanded') || /trigger|accordion|faq|toggle|question/i.test((near || '') + ' ' + el.className);
+      if (!text && !hasImg && !isTrigger) continue;
+      const key = ((own || near || '') + '|' + text).toLowerCase();
+      if (seen.has(key)) continue; seen.add(key);
+      const inNav = !!el.closest('nav, header, [data-framer-name*="Navigation" i]');
+      const isButton = el.tagName === 'BUTTON' || /button|primary|secondary|cta|pill|tab/i.test((own || near || '') + ' ' + el.className) || (cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && !hasImg && text.length < 30);
+      const kind = isTrigger ? 'trigger' : hasImg ? 'card' : inNav ? 'nav' : isButton ? 'button' : 'link';
+      const rank = { button: 0, card: 1, trigger: 2, nav: 3, link: 4 }[kind];
+      const sec = el.closest('section, footer, [data-framer-name]:not([data-framer-name=""])');
+      out.push({ name: ((own || text || near || el.tagName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30)) || el.tagName.toLowerCase(), text: text || undefined, framerName: own || undefined, nearName: near || undefined, y: Math.round(r.top + scrollY), kind, rank, click: isTrigger, section: sec ? (sec.getAttribute('data-framer-name') || sec.tagName.toLowerCase()) : '', tag: el.tagName.toLowerCase() });
     }
-    // spread: one per (section, kind) first, then fill by y
-    const picked = []; const bySec = new Map();
-    for (const c of out) { const k = c.section + '|' + (c.click ? 'trigger' : c.card ? 'card' : c.tag); if (!bySec.has(k)) { bySec.set(k, c); picked.push(c); } }
+    out.sort((a, b) => a.rank - b.rank || a.y - b.y);
+    // one per (section, kind) first so the sample spreads across the page, then fill by rank
+    const picked = []; const keys = new Set();
+    for (const c of out) { const k = c.section + '|' + c.kind; if (!keys.has(k)) { keys.add(k); picked.push(c); } }
     for (const c of out) if (picked.length < max && !picked.includes(c)) picked.push(c);
     return picked.slice(0, max).sort((a, b) => a.y - b.y);
   })(${MAX_HOVERS})`;
@@ -342,8 +351,8 @@ export async function runCapture(argv: string[]) {
     const cands = (await page.evaluate(AUTO_HOVERS_JS)) as any[];
     return cands.map((c, i) => ({
       name: `${i}-${c.name}`,
-      selector: c.framerName ? `[data-framer-name="${c.framerName.replace(/"/g, '\\"')}"]` : c.tag,
-      text: c.framerName ? undefined : c.text,
+      selector: c.framerName ? `${c.tag}[data-framer-name="${c.framerName.replace(/"/g, '\\"')}"], [data-framer-name="${c.framerName.replace(/"/g, '\\"')}"] ${c.tag}` : c.tag,
+      text: c.text,
       click: !!c.click,
     }));
   }
@@ -393,14 +402,15 @@ export async function runCapture(argv: string[]) {
     } catch (e: any) { errors.push(`[hovers] ${e.message}`); } finally { await closeCtx(ctx); }
   }
 
-  /** Elements whose transform / opacity / background-position changes with no input over 600ms: tickers, pulses, canvases. */
+  /** Elements whose transform / opacity / background-position keeps changing with no input (sampled 3x over 1.2s after settling): tickers, pulses, canvases. Fixed elements (scroll-driven navs) are excluded. */
   const LOOPS_JS = `(async () => {
+    await new Promise(r => setTimeout(r, 1500));
     const sample = () => { const m = new Map(); let i = 0; for (const el of document.querySelectorAll('body *')) { if (i++ > 6000) break; const r = el.getBoundingClientRect(); if (r.width < 40 || r.height < 12) continue; const cs = getComputedStyle(el); m.set(el, cs.transform + '|' + cs.opacity + '|' + cs.backgroundPosition + '|' + cs.filter); } return m; };
-    const a = sample(); await new Promise(r => setTimeout(r, 600)); const b = sample();
+    const a = sample(); await new Promise(r => setTimeout(r, 600)); const b = sample(); await new Promise(r => setTimeout(r, 600)); const c = sample();
+    const isFixed = (el) => { for (let e = el; e; e = e.parentElement) if (getComputedStyle(e).position === 'fixed') return true; return false; };
     const out = [];
-    for (const [el, v] of a) { if (b.get(el) !== undefined && b.get(el) !== v) { const r = el.getBoundingClientRect(); out.push({ el, y: Math.round(r.top + scrollY), h: Math.round(r.height), w: Math.round(r.width) }); } }
-    for (const c of document.querySelectorAll('canvas')) { const r = c.getBoundingClientRect(); if (r.width > 40) out.push({ el: c, y: Math.round(r.top + scrollY), h: Math.round(r.height), w: Math.round(r.width), canvas: true }); }
-    // keep outermost moving ancestors only
+    for (const [el, v] of a) { if (b.get(el) !== undefined && b.get(el) !== v && c.get(el) !== b.get(el) && !isFixed(el)) { const r = el.getBoundingClientRect(); out.push({ el, y: Math.round(r.top + scrollY), h: Math.round(r.height), w: Math.round(r.width) }); } }
+    for (const cv of document.querySelectorAll('canvas')) { const r = cv.getBoundingClientRect(); if (r.width > 40 && !isFixed(cv)) out.push({ el: cv, y: Math.round(r.top + scrollY), h: Math.round(r.height), w: Math.round(r.width), canvas: true }); }
     const keep = out.filter(o => !out.some(p => p !== o && p.el.contains(o.el)));
     return keep.slice(0, 6).map((o, i) => { const named = o.el.closest('[data-framer-name]'); o.el.setAttribute('data-1to1-loop', String(i)); return { index: i, name: (named?.getAttribute('data-framer-name') || o.el.tagName).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30), y: o.y, h: o.h, w: o.w, canvas: !!o.canvas }; });
   })()`;
@@ -482,7 +492,7 @@ export async function runCapture(argv: string[]) {
       for (const s of secs) L.push(`| ${s.index} | ${s.name} | ${s.tag} | ${s.y} | ${s.h} | ${s.y}-${s.y + s.h} |`);
       L.push('');
     }
-    L.push('Selection rule (framer mode): children of the content root (parent of the named `<section>`s) plus its parent\'s children, visible, height >= 100px and < 90% of document, not position:fixed. Generic mode: section/footer/header or tall children of main.', '');
+    L.push('Selection rule: the outermost visible elements that are >= 100px tall, >= 200px wide and <= 90% of the document height, not position:fixed. Name = own data-framer-name (unless generic), else a Footer / Navigation / Hero descendant name, else the first non-generic descendant name, id, aria-label or first heading.', '');
     L.push(`## Frame scenarios (${DESKTOP.width}x${DESKTOP.height}, CDP Page.startScreencast png everyFrame, frames at ${FRAME_DSF}x, cap ${MAX_FRAMES})`, '', '| scenario | frames | duration ms | motion first->last ms | motion ranges | notes |', '|---|---|---|---|---|---|');
     for (const [n, s] of Object.entries<any>(report.scenarios)) {
       const m = s.motion || {};
@@ -509,15 +519,27 @@ export async function runCapture(argv: string[]) {
   }
 
   // ---------------------------------------------------------------- main
-  const browser = await launch(true);
+  const pool = new BrowserPool(true);
+  const VIEWPORT_MS = a.num('viewport-timeout', 8 * 60) * 1000;
+  const SCENARIO_MS = a.num('scenario-timeout', 4 * 60) * 1000;
+  /** run a unit; on timeout or a dead browser, record the error and relaunch so the next unit gets a fresh browser */
+  const unit = async (label: string, ms: number, fn: (b: Browser) => Promise<unknown>) => {
+    const r = await guard(label, ms, async () => fn(await pool.get()));
+    if (!r.ok) {
+      errors.push(`[${label}] ${r.reason}`);
+      if (r.timedOut || !(await pool.get()).isConnected()) await pool.reset();
+    }
+    return r.ok;
+  };
   try {
-    if (want('static')) for (const vp of vps) await captureViewport(browser, vp);
+    if (want('static')) for (const vp of vps) await unit(`viewport ${vp.name}`, VIEWPORT_MS, (b) => captureViewport(b, vp));
     if (want('assets') && ONLY.includes('assets')) {
       for (const vp of vps) {
-        const ctx = await ctxFor(browser, vp);
-        const page = await ctx.newPage();
-        try { await load(page, URL); await revealPass(page, false); } catch (e: any) { errors.push(`[assets ${vp.name}] ${e.message}`); }
-        await closeCtx(ctx);
+        await unit(`assets ${vp.name}`, VIEWPORT_MS, async (b) => {
+          const ctx = await ctxFor(b, vp);
+          const page = await ctx.newPage();
+          try { await load(page, URL); await revealPass(page, false); } finally { await closeCtx(ctx); }
+        });
       }
     }
     if (ONLY.includes('rediff')) await rediffAll();
@@ -525,32 +547,35 @@ export async function runCapture(argv: string[]) {
       log('== frame scenarios');
       fs.mkdirSync(path.join(OUT, 'frames'), { recursive: true });
       let sections: Section[] = report.sections[DESKTOP.name];
-      let hoverSpecs: HoverSpec[];
-      {
-        const { ctx, page } = await freshPage(browser);
-        await load(page, URL);
-        await reveal(page);
-        if (!sections) { sections = (await detectSections(page)).sections; report.sections[DESKTOP.name] = sections; }
-        hoverSpecs = hoverFile ? JSON.parse(fs.readFileSync(hoverFile, 'utf8')) : await autoHoverSpecs(page);
-        report.hoverTargets = hoverSpecs;
-        log(`  ${hoverSpecs.length} hover/click targets`);
-        await closeCtx(ctx);
-      }
-      await scenarioLoad(browser);
-      if (!noScrollFrames) for (const s of sections.slice(1)) await scenarioScroll(browser, s);
-      await scenarioHovers(browser, hoverSpecs);
-      await scenarioLoops(browser);
+      let hoverSpecs: HoverSpec[] = [];
+      await unit('frame setup', SCENARIO_MS, async (b) => {
+        const ctx = await ctxFor(b, DESKTOP, FRAME_DSF);
+        const page = await ctx.newPage();
+        try {
+          await load(page, URL);
+          await reveal(page);
+          if (!sections) { sections = (await detectSections(page)).sections; report.sections[DESKTOP.name] = sections; }
+          hoverSpecs = hoverFile ? JSON.parse(fs.readFileSync(hoverFile, 'utf8')) : await autoHoverSpecs(page);
+          report.hoverTargets = hoverSpecs;
+          log(`  ${hoverSpecs.length} hover/click targets`);
+        } finally { await closeCtx(ctx); }
+      });
+      await unit('scenario load', SCENARIO_MS, (b) => scenarioLoad(b));
+      if (!noScrollFrames) for (const s of (sections ?? []).slice(1)) await unit(`scenario scroll-${s.slug}`, SCENARIO_MS, (b) => scenarioScroll(b, s));
+      for (const h of hoverSpecs) await unit(`scenario hover ${h.name}`, SCENARIO_MS, (b) => scenarioHovers(b, [h]));
+      await unit('scenario loops', SCENARIO_MS * 2, (b) => scenarioLoops(b));
     }
   } catch (e: any) {
     errors.push(`fatal: ${e.stack || e.message}`);
     log('FATAL', e);
   } finally {
-    await Promise.allSettled(assetWrites);
+    await Promise.allSettled(assetWrites.map((p) => withTimeout(p, 5_000, 'asset write')));
     fs.writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2));
     report.assets = Object.keys(manifest).length;
+    for (const n of Object.keys(report.scenarios)) if (!fs.existsSync(path.join(OUT, 'frames', n, 'frames.json'))) delete report.scenarios[n];
     fs.writeFileSync(REPORT_FILE, JSON.stringify({ report, errors }, null, 2));
     writeReadme();
-    await withTimeout(browser.close(), 15_000, 'browser.close');
+    await pool.close();
     log(`done -> ${OUT} (errors: ${errors.length})`);
   }
 }

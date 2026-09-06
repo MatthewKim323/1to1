@@ -26,7 +26,9 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Resolve after `ms` even if the promise never settles (Playwright's close / body calls can hang on a dying target). */
 export function withTimeout<T>(p: Promise<T>, ms: number, label = 'op'): Promise<T | undefined> {
-  return Promise.race([p.catch(() => undefined as T | undefined), sleep(ms).then(() => { log(`  ${label} timed out after ${ms}ms, continuing`); return undefined; })]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((r) => { timer = setTimeout(() => { log(`  ${label} timed out after ${ms}ms, continuing`); r(undefined); }, ms); });
+  return Promise.race([p.catch(() => undefined as T | undefined), deadline]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 /** context.close() that cannot hang the run. */
@@ -36,7 +38,49 @@ export async function closeCtx(ctx: BrowserContext, ms = 15_000) {
 export const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 23), ...a);
 
 export async function launch(headless = true): Promise<Browser> {
-  return chromium.launch({ headless, args: ['--disable-blink-features=AutomationControlled'] });
+  const b = await chromium.launch({ headless, args: ['--disable-blink-features=AutomationControlled'] });
+  b.on('disconnected', () => log('  browser disconnected'));
+  return b;
+}
+
+/**
+ * A browser that is relaunched when it dies. Under memory pressure Chromium can be killed and
+ * Playwright (on bun) does not always surface it; pending calls then hang forever. Every long job
+ * takes its browser from here and wraps each unit of work in `guard`, resetting the pool on timeout.
+ */
+export class BrowserPool {
+  private b: Browser | null = null;
+  constructor(private headless = true) {}
+  async get(): Promise<Browser> {
+    if (!this.b || !this.b.isConnected()) {
+      if (this.b) log('  browser gone, relaunching');
+      this.b = await launch(this.headless);
+    }
+    return this.b;
+  }
+  async reset() {
+    if (this.b) await withTimeout(this.b.close(), 5_000, 'browser.close');
+    this.b = null;
+  }
+  async close() {
+    await this.reset();
+  }
+}
+
+/** Run one unit of work with a deadline. Returns ok:false (and the reason) instead of hanging or throwing. */
+export type GuardResult = { ok: boolean; reason?: string; timedOut?: boolean };
+export async function guard(label: string, ms: number, fn: () => Promise<unknown>): Promise<GuardResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race<GuardResult>([
+      fn().then((): GuardResult => ({ ok: true })).catch((e: any): GuardResult => ({ ok: false, reason: e?.message || String(e) })),
+      new Promise<GuardResult>((r) => { timer = setTimeout(() => r({ ok: false, reason: `${label} exceeded ${Math.round(ms / 1000)}s`, timedOut: true }), ms); }),
+    ]);
+    if (!res.ok) log(`  ${label}: ${res.reason}`);
+    return res;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function newCtx(browser: Browser, vp: { width: number; height: number }, dsf = 2): Promise<BrowserContext> {
@@ -240,45 +284,36 @@ export const LAYOUT_JS = `(() => {
 
 export type Section = { index: number; name: string; slug: string; y: number; h: number; tag: string; selectorHint: string };
 
-/**
- * Top-level sections. Framer: children of the content root (the common parent of the named
- * <section>s) plus its parent's children. Generic sites: <section>/<footer>/<header> or the tall
- * children of <main>/<body>.
- */
+/** Top-level sections: the outermost substantial blocks of the page (see the rule inside). Works for Framer and generic sites alike. */
 export const SECTIONS_JS = `(() => {
   const docH = document.documentElement.scrollHeight;
-  const slugOk = (el) => { const cs = getComputedStyle(el); const r = el.getBoundingClientRect(); return cs.display !== 'none' && cs.visibility !== 'hidden' && r.height >= 100 && r.height <= docH * 0.9 && cs.position !== 'fixed'; };
-  const secs = Array.from(document.querySelectorAll('section[data-framer-name]'));
-  let cands;
-  let mode;
-  if (secs.length) {
-    const parents = new Map(); for (const s of secs) parents.set(s.parentElement, (parents.get(s.parentElement)||0)+1);
-    const root = [...parents.entries()].sort((a,b)=>b[1]-a[1])[0][0];
-    cands = [...new Set([...root.children, ...root.parentElement.children])].filter((el) => el !== root && !el.contains(root));
-    mode = 'framer';
-  } else {
-    cands = Array.from(document.querySelectorAll('section, footer, header'));
-    if (cands.length < 3) { const root = document.querySelector('main') || document.body; cands = Array.from(root.children); }
-    mode = 'generic';
-  }
+  const SKIP = new Set(['SCRIPT','STYLE','LINK','NOSCRIPT','TEMPLATE']);
+  const blockOk = (el) => {
+    if (SKIP.has(el.tagName) || el.namespaceURI === 'http://www.w3.org/2000/svg') return false;
+    const cs = getComputedStyle(el); if (cs.display === 'none' || cs.visibility === 'hidden' || cs.position === 'fixed') return false;
+    const r = el.getBoundingClientRect(); return r.width >= 200 && r.height >= 100 && r.height <= docH * 0.9;
+  };
+  // top-level blocks = the outermost elements that are substantial (>= 100px tall) but not the page itself (<= 90% of it).
+  // Named <section>s, footers, content wrappers inside zero-height slots all fall out of this without any site-specific rule.
+  const blocks = new Set(Array.from(document.body.querySelectorAll('*')).filter(blockOk));
+  const cands = [...blocks].filter((el) => { for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) if (blocks.has(p)) return false; return true; });
+  const generic = /^(desktop|tablet|phone|mobile|container|content|wrapper|default|main|page|variant \\d+)$/i;
   const out = [];
   for (const el of cands) {
-    if (['SCRIPT','STYLE','LINK'].includes(el.tagName)) continue;
-    if (!slugOk(el)) continue;
     const r = el.getBoundingClientRect();
-    const generic = /^(desktop|tablet|phone|mobile|container|content|wrapper|default|main|page|variant \\d+)$/i;
     let name = el.getAttribute('data-framer-name');
     if (!name || generic.test(name)) {
       const ds = Array.from(el.querySelectorAll('[data-framer-name]')).map(d => d.getAttribute('data-framer-name'));
       const priority = /^(footer|navigation|hero)/i;
       const isLast = Math.round(r.top + scrollY + r.height) >= docH - 5;
-      name = ds.find(n => priority.test(n)) || (isLast ? 'Footer' : null) || ds.find(n => !generic.test(n)) || ds[0] || el.id || el.getAttribute('aria-label') || (el.querySelector('h1,h2,h3')?.textContent || '').trim().slice(0, 40) || el.tagName.toLowerCase();
+      name = ds.find(n => priority.test(n)) || (el.tagName === 'FOOTER' || el.querySelector('footer') || isLast ? 'Footer' : null) || ds.find(n => !generic.test(n)) || ds[0] || el.id || el.getAttribute('aria-label') || (el.querySelector('h1,h2,h3')?.textContent || '').trim().slice(0, 40) || el.tagName.toLowerCase();
     }
-    const hint = el.getAttribute('data-framer-name') ? '[data-framer-name="' + name + '"]' : (el.id ? '#' + el.id : el.tagName.toLowerCase() + ':nth-of-type(' + (Array.from(el.parentElement.children).filter(c => c.tagName === el.tagName).indexOf(el) + 1) + ')');
+    const own = el.getAttribute('data-framer-name');
+    const hint = own ? el.tagName.toLowerCase() + '[data-framer-name="' + own + '"]' : (el.id ? '#' + el.id : el.tagName.toLowerCase() + ':nth-of-type(' + (Array.from(el.parentElement.children).filter(c => c.tagName === el.tagName).indexOf(el) + 1) + ')');
     out.push({ name, y: Math.round(r.top + scrollY), h: Math.round(r.height), tag: el.tagName.toLowerCase(), selectorHint: hint });
   }
   out.sort((a,b)=>a.y-b.y);
-  return { mode, sections: out };
+  return { mode: 'blocks', sections: out };
 })()`;
 
 export function slug(s: string) {
@@ -290,19 +325,12 @@ export async function detectSections(page: Page): Promise<{ mode: string; sectio
   return { mode: res.mode, sections: res.sections.map((s, i) => ({ index: i, slug: slug(s.name), ...s })) };
 }
 
-/** Section boxes of a page as printed by `1to1 sections` and used by `verify`. */
+/** Top-level blocks of a page (same rule as the reference capture, so build and reference are measured identically). Used by `heights` and `verify`. */
 export async function measureSections(page: Page) {
-  return page.evaluate(() => {
-    const out: { y: number; h: number; name: string }[] = [];
-    const all = Array.from(document.querySelectorAll('section, footer, header'));
-    for (const s of all) {
-      const r = s.getBoundingClientRect();
-      if (r.height < 50) continue;
-      // outermost only: a <footer> inside a <footer> is the same block
-      if (all.some((o) => o !== s && o.contains(s))) continue;
-      const name = s.getAttribute('data-framer-name') || s.id || s.getAttribute('class') || s.tagName;
-      out.push({ y: Math.round(r.top + scrollY), h: Math.round(r.height), name: String(name).slice(0, 40) });
-    }
+  const res = (await page.evaluate(SECTIONS_JS)) as { sections: { y: number; h: number; name: string }[] };
+  const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  return { sections: res.sections.map((s) => ({ y: s.y, h: s.h, name: s.name.slice(0, 40) })), docHeight };
+}
     return { sections: out, docHeight: document.documentElement.scrollHeight };
   });
 }

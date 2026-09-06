@@ -1,6 +1,6 @@
 /**
  * init: drop the builder rulebooks into a project's reference/ folder with the placeholders filled.
- *   1to1 init <projectDir> --url <live url> [--ref reference/name] [--port 3777] [--stack "Next.js 16 + React 19 + motion + Lenis"]
+ *   1to1 init <projectDir> --url <live url> [--ref reference/name] [--routes /,/about] [--port 3777] [--stack "..."]
  * Writes <projectDir>/reference/CONVENTIONS.md, PAGES.md, GOAL.md (from templates/). Existing files are not overwritten unless --force.
  */
 import fs from 'node:fs';
@@ -13,7 +13,7 @@ export function runInit(argv: string[]) {
   const a = new Args(argv);
   const project = a.positional[0];
   const url = a.str('url');
-  if (!project || !url) usage('usage: 1to1 init <projectDir> --url <live url> [--ref reference/name] [--port 3777] [--stack "..."] [--force]');
+  if (!project || !url) usage('usage: 1to1 init <projectDir> --url <live url> [--ref reference/name] [--routes /,/about] [--port 3777] [--stack "..."] [--force]');
   const abs = path.resolve(project);
   const refDir = a.str('ref') ?? (() => {
     const r = path.join(abs, 'reference');
@@ -27,6 +27,7 @@ export function runInit(argv: string[]) {
     REF_ABS: path.resolve(abs, refDir),
     PORT: String(a.num('port', 3777)),
     STACK: a.str('stack', 'Next.js (App Router) + React 19 + `motion` (import from "motion/react") + Lenis'),
+    ROUTES: a.str('routes', '/'),
     DATE: new Date().toISOString().slice(0, 10),
   };
   fs.mkdirSync(path.join(abs, 'reference'), { recursive: true });

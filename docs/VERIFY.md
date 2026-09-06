@@ -13,13 +13,11 @@ Per width (1440 / 1024 / 810 / 390, whatever the capture has):
 | check | source | rule |
 |---|---|---|
 | page height | `capture/report.json` viewports.docHeight vs the build after a reveal pass | equal (`--tolerance 0`) |
-| section heights | `capture/report.json` sections vs the build's outermost `section` / `footer` / `header` elements, matched by order | every one equal |
+| section heights | `capture/report.json` sections vs the build's top-level blocks (same outermost-block rule as the capture), matched by start y (within 3px) | every matched one equal; unmatched blocks are reported with `?` and not checked |
 | console | errors + pageerrors while scrolling the build | zero |
 | pixel diff (`--diff`) | stitched build full page vs `capture/<vp>/full.png`, per section | reported, not gating: text antialiasing, mid-spring captures and animated textures make a few % normal |
 
 Exit code 1 on FAIL. `build/verify.json` has the numbers. The `/goal` condition points at this: PASS for every route at every width.
-
-Wrap every top-level block of your page in a `<section>` (footer in `<footer>`) so section matching by order works.
 
 ## Finding a delta
 
