@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# 1to1 CLI shim: runs the bun CLI from anywhere, installing deps on first run.
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "bun not found. install: curl -fsSL https://bun.sh/install | bash" >&2
+  exit 1
+fi
+
+if [ ! -d "$ROOT/node_modules" ]; then
+  echo "installing dependencies (first run)" >&2
+  (cd "$ROOT" && bun install)
+fi
+
+# chromium revision is tied to the installed playwright version; install once per version
+PW_VER="$(cd "$ROOT" && bun -e 'console.log(require("playwright/package.json").version)' 2>/dev/null)"
+MARK="$ROOT/node_modules/.chromium-$PW_VER"
+if [ -n "$PW_VER" ] && [ ! -f "$MARK" ]; then
+  echo "installing Playwright Chromium for $PW_VER (first run)" >&2
+  (cd "$ROOT" && bunx playwright install chromium) && touch "$MARK"
+fi
+
+exec bun "$ROOT/src/cli.ts" "$@"
