@@ -331,6 +331,3 @@ export async function measureSections(page: Page) {
   const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
   return { sections: res.sections.map((s) => ({ y: s.y, h: s.h, name: s.name.slice(0, 40) })), docHeight };
 }
-    return { sections: out, docHeight: document.documentElement.scrollHeight };
-  });
-}
