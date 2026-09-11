@@ -76,7 +76,7 @@ export function runOrigin(argv: string[]) {
   if (!o) usage(`no .origin.json in ${ref}`);
   if (a.flag('url')) return console.log(o.url);
   if (a.flag('host')) return console.log(o.host);
-  if (a.flag('tokens')) return console.log(o.tokens.join(','));
+  if (a.flag('tokens')) return console.log(tokensFor(path.resolve(ref)).tokens.join(','));   // re-derived, same list the scanner uses
   if (a.flag('brand')) return console.log(o.brand);
   console.log(JSON.stringify(o, null, 2));
 }
