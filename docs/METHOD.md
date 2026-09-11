@@ -2,7 +2,19 @@
 
 Everything here was learned rebuilding a six-route Framer site to the pixel in one day. The order matters; the reasons are written down so the steps do not degrade into ritual.
 
-## 0. Decide what 1:1 means, then lock it
+## 0.a Rule zero: the rebuild never says where it came from
+
+1:1 is about pixels and motion, not provenance. What ships is the user's own site: their components, their assets, their brand. Nothing in it may name the origin, and that is enforced rather than trusted:
+
+- reference dirs are named by structure (`site`, `site-about`), never by host
+- harvested assets are content addressed (`img-<hash>.webp`, `font-<hash>.woff2`); the origin's own filenames are dropped at interception
+- `prep` rewrites the rendered DOM before anything is derived from it: origin words become the project's brand (`--brand`, default: the project folder name), absolute links back to the origin become route-relative. The tree, the spec, the modules and the svg defs are all downstream of that, so a builder copying text verbatim stays clean
+- the source url lives in `reference/<name>/.origin.json` and nowhere else; `1to1 init` gitignores it, `1to1 origin <ref> --url` feeds it to a rig without anyone typing it
+- `1to1 blackout <project>` scans the project (skipping `reference/`) for anything that slipped through and `1to1 verify` fails on a hit
+
+Two things the tool cannot do for you: a logo or wordmark asset still carries the origin visually (treat it as a placeholder and say so), and a token that is also web vocabulary (a site called Linear, Arc, Motion) is only scrubbed in its capitalized spelling so `linear-gradient` survives. Add anything the hostname does not carry with `--tokens a,b`.
+
+## 0.b Decide what 1:1 means, then lock it
 
 "Looks the same" is not a stopping condition; an agent will call it done after the hero. The condition that worked:
 
@@ -11,7 +23,7 @@ Everything here was learned rebuilding a six-route Framer site to the pixel in o
 - motion values come from source, and load / scroll / hover timing lines up frame by frame with the reference
 - `tsc` clean, production build green, zero console errors on every route
 
-Set it as a Claude Code goal (`/goal ...`, text in `templates/GOAL.md`) before starting. The stop hook keeps the session working until `1to1 verify` says PASS.
+Plus: `1to1 blackout` CLEAN. Set it as a Claude Code goal (`/goal ...`, text in `templates/GOAL.md`) before starting; the goal text names the brand, never the source. The stop hook keeps the session working until `1to1 verify` says PASS.
 
 ## 1. Extract the truth (`1to1 clone <url>`)
 
@@ -22,7 +34,7 @@ Four things have to be true of a reference or the rebuild will be wrong in ways 
 3. **Boxes, not pixels.** `layout.json` records every visible element's page rect and the computed styles that decide layout (display, flex, gap, padding, margin, font, line-height, border, radius, transform). Screenshots tell you something is off; layout.json tells you which element by how many pixels.
 4. **Frames, not video.** CDP `Page.startScreencast` emits every compositor frame with its swap timestamp. Scenarios: fresh load (screencast starts before navigation), each section scrolled from 85% to 15% of the viewport over 1.5s on a fresh page (so appears replay), each interactive element hovered / clicked with the mouse moved in steps, self-animating elements for 4s then hovered (pauses? slows?). A per-frame diff gives the motion timeline in ms. Gaps between frames mean nothing repainted.
 
-Then `prep` turns `dom/full.html` into `spec/page.txt`: the tree with Framer names, appear ids, classes, layout inline styles and text, followed by every CSS rule for those classes grouped by breakpoint. Builders copy numbers from this file. `rip` (Framer) prints windows around every motion pattern in the page modules and lists the transition constants. `REBUILD.md` ties it together.
+Then `prep` turns `dom/full.html` into `spec/page.txt`: the tree with Framer names, appear ids, classes, layout inline styles and text, followed by every CSS rule for those classes grouped by breakpoint. Builders copy numbers and text from this file, which is already origin-scrubbed. `rip` (Framer) prints windows around every motion pattern in the page modules and lists the transition constants. `REBUILD.md` ties it together.
 
 Run `clone` for every route in the nav. Frames matter on the home page; subpages usually only need `--no-frames`.
 
@@ -64,7 +76,7 @@ Verify motion with frames: `1to1 frames <dev> out/load --ms 6000 --start-before-
 
 ## 6. Verify until PASS (`docs/VERIFY.md`)
 
-`1to1 verify <dev> reference/<name> --diff` per route. When a height differs: `1to1 heights` to find the section, `1to1 boxes` vs `1to1 refboxes` on that y-range to find the element, fix the box model, re-measure. Every remaining pixel in the sevora job was found this way; screenshots alone never got the last 30px.
+`1to1 verify <dev> reference/<name> --diff` per route. When a height differs: `1to1 heights` to find the section, `1to1 boxes` vs `1to1 refboxes` on that y-range to find the element, fix the box model, re-measure. Every remaining pixel in the job this method came out of was found this way; screenshots alone never got the last 30px.
 
 ## 7. Subpages
 

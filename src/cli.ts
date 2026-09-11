@@ -2,7 +2,7 @@
 /**
  * 1to1: clone anything.
  *
- *   1to1 clone <url> [--out reference] [--name slug] [--headless] [--no-frames]   extract + capture + prep + rip + REBUILD.md
+ *   1to1 clone <url> [--out reference] [--name slug] [--brand Name] [--tokens a,b] [--headless] [--no-frames]   extract + capture + prep + rip + REBUILD.md
  *
  * stages
  *   extract <url>                 DOM, revealed full pages (4 widths), tokens, observed motion, assets, stack
@@ -11,6 +11,10 @@
  *   rip <ref>                     Framer module motion windows + transition constants + appear-by-name
  *   brief <ref>                   (re)write REBUILD.md
  *   init <project> --url <url>    CONVENTIONS.md / PAGES.md / GOAL.md into <project>/reference/
+ *
+ * origin blackout (the rebuild never says where it came from)
+ *   blackout <project>            fail on any mention of the origin in the project (--ref --tokens --strict --fix)
+ *   origin <ref> [--url|--host]   print what a reference dir was taken from, for scripting the rigs
  *
  * verify loop
  *   shot <url> <out.png>          revealed scroll-and-stitch screenshot (--w --clip --scrollto --click --hover)
@@ -54,6 +58,8 @@ async function main() {
     case 'cms': return (await import('./rig/misc.ts')).runCms(rest);
     case 'cssq': return (await import('./rig/misc.ts')).runCssq(rest);
     case 'verify': return (await import('./rig/verify.ts')).runVerify(rest);
+    case 'blackout': return (await import('./rig/blackout.ts')).runBlackout(rest);
+    case 'origin': return (await import('./rig/blackout.ts')).runOrigin(rest);
     case undefined:
     case 'help':
     case '--help':
@@ -68,11 +74,11 @@ async function main() {
 async function clone(argv: string[]) {
   const a = new Args(argv);
   const url = a.positional[0];
-  if (!url) usage('usage: 1to1 clone <url> [--out reference] [--name slug] [--headless] [--no-frames] [--viewports 1440,1024,810,390]');
+  if (!url) usage('usage: 1to1 clone <url> [--out reference] [--name slug] [--brand Name] [--tokens a,b] [--headless] [--no-frames] [--viewports 1440,1024,810,390]');
   const { runExtract, slugFromUrl } = await import('./extract.ts');
-  const name = a.str('name') ?? slugFromUrl(url);
+  const name = a.str('name') ?? slugFromUrl(url, a.str('out', 'reference'));
   const pass = (...ks: string[]) => ks.flatMap((k) => (a.str(k) ? [`--${k}`, a.str(k)!] : []));
-  const { outDir } = await runExtract([url, ...pass('out', 'name', 'viewports'), ...(a.flag('headless') ? ['--headless'] : [])]);
+  const { outDir } = await runExtract([url, ...pass('out', 'name', 'viewports', 'brand', 'tokens'), ...(a.flag('headless') ? ['--headless'] : [])]);
   const { runCapture } = await import('./capture.ts');
   await runCapture([url, '--name', name, ...pass('out', 'viewports', 'max-hovers', 'hovers'), ...(a.flag('no-frames') ? ['--only', 'static'] : [])]);
   const { runPrep } = await import('./prep.ts');

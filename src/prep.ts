@@ -15,6 +15,7 @@ import { parse, HTMLElement, Node, NodeType } from 'node-html-parser';
 import { Args, usage } from './lib/args.ts';
 import { cssBlocks, cleanBody, stylesFromHtml } from './lib/css.ts';
 import { log } from './lib/browser.ts';
+import { readOrigin, scrubSource, scrub } from './lib/anon.ts';
 
 const KEEP = ['position', 'width', 'height', 'top', 'left', 'right', 'bottom', 'opacity', 'transform', 'background', 'border-radius', 'gap', 'padding', 'flex', 'grid', 'z-index', 'overflow', 'aspect-ratio', 'object-fit', 'will-change', 'filter', 'backdrop', 'box-shadow', '--framer-font', '--framer-line', '--framer-letter', '--framer-text-color', '--framer-text-align', 'white-space', 'color', 'mix-blend', 'mask', '--border', 'perspective', 'transform-style'];
 const GENERIC = new Set(['framer-text', 'framer-body', 'framer-image', 'framer-styles']);
@@ -83,8 +84,19 @@ export async function runPrep(argv: string[]) {
   const a = new Args(argv);
   const root = a.positional[0];
   if (!root || !fs.existsSync(path.join(root, 'dom', 'full.html'))) usage('usage: 1to1 prep <reference/name>   (needs dom/full.html from `1to1 extract`)');
-  const src = fs.readFileSync(path.join(root, 'dom', 'full.html'), 'utf8');
   for (const d of ['dom', 'spec', 'spec/sections', 'motion', 'modules', 'assets/svg']) fs.mkdirSync(path.join(root, d), { recursive: true });
+
+  // Origin blackout, applied once at the source: the rendered html is rewritten before anything is derived
+  // from it, so the tree, the spec, the svg defs and every module downstream are already neutral. Links back
+  // to the origin become route-relative, which is what the rebuild wants anyway.
+  const origin = readOrigin(root);
+  const tokens = origin?.tokens ?? [];
+  const brand = origin?.brand ?? 'brand';
+  const host = origin?.host ?? '';
+  const clean = (t: string) => scrubSource(t, tokens, brand, host);
+  const raw = fs.readFileSync(path.join(root, 'dom', 'full.html'), 'utf8');
+  const src = clean(raw);
+  if (src !== raw) fs.writeFileSync(path.join(root, 'dom', 'full.html'), src);
 
   const css = stylesFromHtml(src);
   fs.writeFileSync(path.join(root, 'dom', 'styles.css'), css);
@@ -95,11 +107,11 @@ export async function runPrep(argv: string[]) {
   const modUrls = [...new Set([...src.matchAll(/https:\/\/framerusercontent\.com\/sites\/[^"' ]+\.mjs/g)].map((m) => m[0]))].sort();
   let fetched = 0;
   for (const u of modUrls) {
-    const fn = path.join(root, 'modules', u.split('/').pop()!);
+    const fn = path.join(root, 'modules', scrub(u.split('/').pop()!, tokens, brand));
     if (fs.existsSync(fn)) continue;
     try {
       const r = await fetch(u);
-      if (r.ok) { fs.writeFileSync(fn, Buffer.from(await r.arrayBuffer())); fetched++; }
+      if (r.ok) { fs.writeFileSync(fn, clean(await r.text())); fetched++; }
       else log('module', r.status, u);
     } catch (e: any) { log('module fail', u, e.message); }
   }

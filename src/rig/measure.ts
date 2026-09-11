@@ -1,7 +1,8 @@
 /**
  * heights:  page + section heights of one or more URLs at one or more widths, side by side.
  *   1to1 heights <url> [<url2>] [--w 1440,1024,810,390]
- *   Typical: 1to1 heights http://localhost:3777/about https://site.framer.website/about
+ *   Typical: 1to1 heights http://localhost:3777/about "$(1to1 origin reference/site-about --url)"
+ *   Columns are labelled build / reference and section names are scrubbed: the output never names the origin.
  *
  * boxes:    element boxes (page coords) of a live page for a y-range, same columns as refboxes.
  *   1to1 boxes <url> <width> <yFrom> <yTo> [--filter text]
@@ -15,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Args, usage } from '../lib/args.ts';
 import { launch, newCtx, load, reveal, measureSections, viewportByWidth, VIEWPORTS } from '../lib/browser.ts';
+import { tokensFor, scrub, originTokens } from '../lib/anon.ts';
 
 export async function runHeights(argv: string[]) {
   const a = new Args(argv);
@@ -23,6 +25,13 @@ export async function runHeights(argv: string[]) {
   const widths = a.list('w').map(Number);
   const ws = widths.length ? widths : VIEWPORTS.map((v) => v.width);
   const browser = await launch(true);
+  // Origin blackout: label the columns by role and scrub section names, so a heights table never names the source.
+  const isLocal = (u: string) => /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/.test(u);
+  const refCount = urls.filter((u) => !isLocal(u)).length;
+  let refSeen = 0;
+  const label = urls.map((u) => (isLocal(u) ? `build ${new URL(u).pathname}` : `reference${refCount > 1 ? ' ' + ++refSeen : ''} ${new URL(u).pathname}`));
+  const tokens = urls.filter((u) => !isLocal(u)).flatMap((u) => originTokens(u));
+  const clean = (t: string) => scrub(t, tokens, 'brand');
   const result: Record<string, Record<string, { docHeight: number; sections: { y: number; h: number; name: string }[] }>> = {};
   for (const w of ws) {
     const vp = viewportByWidth(w);
@@ -37,10 +46,10 @@ export async function runHeights(argv: string[]) {
     console.log(`\n== ${w}px`);
     const rows = urls.map((u) => result[u][String(w)]);
     const n = Math.max(...rows.map((r) => r.sections.length));
-    const head = ['#', ...urls.map((u) => u.replace(/^https?:\/\//, '').slice(0, 34).padEnd(34))].join('  ');
+    const head = ['#', ...label.map((l) => l.slice(0, 34).padEnd(34))].join('  ');
     console.log(head);
     for (let i = 0; i < n; i++) {
-      const cells = rows.map((r) => { const s = r.sections[i]; return s ? `${String(s.y).padStart(6)} ${String(s.h).padStart(5)} ${s.name.slice(0, 20)}`.padEnd(34) : ''.padEnd(34); });
+      const cells = rows.map((r) => { const s = r.sections[i]; return s ? `${String(s.y).padStart(6)} ${String(s.h).padStart(5)} ${clean(s.name).slice(0, 20)}`.padEnd(34) : ''.padEnd(34); });
       const hs = rows.map((r) => r.sections[i]?.h);
       const flag = hs.length > 1 && hs.some((h) => h !== hs[0]) ? '  <-- differs' : '';
       console.log([String(i).padStart(2), ...cells].join('  ') + flag);
@@ -95,9 +104,11 @@ export function runRefboxes(argv: string[]) {
   if (!fs.existsSync(file)) usage(`no ${file}. run: 1to1 capture <url> --only static`);
   const y0 = +(y0Arg ?? 0), y1 = +(y1Arg ?? 2000), flt = a.str('filter', '');
   const L = JSON.parse(fs.readFileSync(file, 'utf8')) as any[];
+  const { tokens, brand } = tokensFor(root);   // layout.json is raw capture; nothing printed from it names the origin
+  const clean = (t: string) => scrub(t, tokens, brand);
   console.log(`      y      x      w      h  tag     name                     text                         styles`);
   for (const e of L) {
-    const r = e.rect || {}, n = e.framerName || '', t = (e.text || '').slice(0, 28);
+    const r = e.rect || {}, n = clean(e.framerName || ''), t = clean((e.text || '').slice(0, 28));
     if (!(y0 <= r.y && r.y <= y1)) continue;
     if (['svg', 'path', 'use', 'g', 'rect'].includes(e.tag)) continue;
     if (!(n || t)) continue;

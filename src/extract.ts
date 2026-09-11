@@ -16,21 +16,32 @@ import { createHash } from 'node:crypto';
 import type { Page, CDPSession, Request } from 'playwright';
 import { Args, usage } from './lib/args.ts';
 import { VIEWPORTS, newCtx, load, reveal, stitchFullPage, log, withTimeout, closeCtx, BrowserPool, guard } from './lib/browser.ts';
+import { originTokens, neutralRefName, neutralAssetName, writeOrigin, readOrigin, brandFor, isReservedToken } from './lib/anon.ts';
 
 export type Stack = { framework: string; framer: boolean; framerMotion: boolean; webflow: boolean; lenis: boolean; gsap: boolean; three: boolean; spline: boolean; notes: string[] };
 
-export function slugFromUrl(url: string) {
-  const u = new URL(url);
-  const host = u.hostname.replace(/^www\./, '').replace(/\.framer\.website$/, '');
-  const path = u.pathname.replace(/\/+$/, '').replace(/^\//, '').replace(/[^a-z0-9]+/gi, '-');
-  return `${host}${path ? '-' + path : ''}`.replace(/[^a-z0-9-]+/gi, '-').toLowerCase();
+/**
+ * Reference dir name. Structure only: `/` -> site, `/about` -> site-about. The origin never names a folder
+ * (see lib/anon.ts). A second, unrelated origin in the same project gets -2, -3 rather than reusing the dir.
+ */
+export function slugFromUrl(url: string, out = 'reference') {
+  const base = neutralRefName(url, originTokens(url));
+  const root = join(process.cwd(), out);
+  for (let i = 1; i < 50; i++) {
+    const name = i === 1 ? base : `${base}-${i}`;
+    const dir = join(root, name);
+    if (!existsSync(dir)) return name;
+    const o = readOrigin(dir);
+    if (!o || o.url === url) return name;
+  }
+  return base;
 }
 
 export async function runExtract(argv: string[]) {
   const a = new Args(argv);
   const url = a.positional[0];
-  if (!url) usage('usage: 1to1 extract <url> [--out reference] [--name slug] [--headless] [--viewports 1440,1024,810,390]');
-  const name = a.str('name') ?? slugFromUrl(url);
+  if (!url) usage('usage: 1to1 extract <url> [--out reference] [--name slug] [--brand Name] [--tokens a,b] [--headless] [--viewports 1440,1024,810,390]');
+  const name = a.str('name') ?? slugFromUrl(url, a.str('out', 'reference'));
   const outDir = join(process.cwd(), a.str('out', 'reference'), name);
   const headless = a.flag('headless');
   const widths = a.list('viewports').map(Number);
@@ -94,7 +105,15 @@ export async function runExtract(argv: string[]) {
 
   await assets.finalize();
   await writeFile(join(outDir, 'stack', 'detected.md'), stackMd(stack), 'utf8');
-  const meta = { url, name, capturedAt: new Date().toISOString(), pageTitle: title, stack, viewports: vps, docHeights: heights, revealMethod: method, unrevealed: unrevealed.length, animationCount: computed.length + cdpAnims.length, assetCount: assets.manifest.length, errors };
+  // Origin blackout: the url and the page title live in .origin.json and nowhere else. meta.json, the briefs,
+  // the specs and everything copied into the project stay neutral.
+  const brand = brandFor(process.cwd(), a.str('brand'));
+  const originWords = originTokens(url, title, a.list('tokens'));
+  writeOrigin(outDir, { url, host: new URL(url).hostname, title, tokens: originWords, brand, capturedAt: new Date().toISOString() });
+  const risky = originWords.filter(isReservedToken);
+  if (risky.length) log(`  blackout: ${risky.join(', ')} also read as web vocabulary, so only the capitalized spelling is scrubbed`);
+  log(`  blackout: ${originWords.length} origin token(s) -> "${brand}"; origin kept only in ${name}/.origin.json`);
+  const meta = { name, capturedAt: new Date().toISOString(), brand, stack, viewports: vps, docHeights: heights, revealMethod: method, unrevealed: unrevealed.length, animationCount: computed.length + cdpAnims.length, assetCount: assets.manifest.length, errors };
   await writeFile(join(outDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
   await pool.close();
   log(`done in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${outDir}`);
@@ -299,9 +318,8 @@ export function attachAssets(page: Page, outDir: string, shared?: Collector): Co
       const buf = await withTimeout(response.body(), 20_000, 'asset body');
       if (!buf) return;
       const ext = extname(new URL(url).pathname).toLowerCase() || ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/avif': '.avif', 'image/gif': '.gif', 'image/svg+xml': '.svg', 'video/mp4': '.mp4', 'video/webm': '.webm', 'font/woff2': '.woff2', 'font/woff': '.woff' } as Record<string, string>)[mime] || '';
-      const base = (new URL(url).pathname.split('/').pop() || 'asset').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-      const hash = createHash('sha1').update(url).digest('hex').slice(0, 8);
-      const file = `${hash}-${base}${base.toLowerCase().endsWith(ext) ? '' : ext}`;
+      const hash = createHash('sha1').update(url).digest('hex').slice(0, 10);
+      const file = neutralAssetName(hash, ext || extname(new URL(url).pathname).toLowerCase(), bucket);
       const dir = join(outDir, 'assets', bucket);
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, file), buf);
@@ -322,6 +340,6 @@ export function attachAssets(page: Page, outDir: string, shared?: Collector): Co
 }
 
 export function referenceDirFor(url: string, out = 'reference', name?: string) {
-  const dir = join(process.cwd(), out, name ?? slugFromUrl(url));
+  const dir = join(process.cwd(), out, name ?? slugFromUrl(url, out));
   return { dir, exists: existsSync(dir) };
 }

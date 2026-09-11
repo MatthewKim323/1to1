@@ -22,6 +22,7 @@ Subpages: build the shared shell (nav + footer + route fade + `?only=1`) and stu
 - its spec slice, its crops at three widths, `layout.json`, the section's y-range on the live page
 - the screenshot command with `?only=` and the compare-with-Read loop, and the widths to check
 - the motion policy: either "use `revealSpring` and mark `// TODO(spec)`" (before the spec exists) or "wire the exact values from component-specs.md §N"
+- rule zero verbatim: no origin name, host, brand, logo filename or link anywhere it writes, and `1to1 blackout <project>` CLEAN before it reports done. Never tell a builder what the source site is; it does not need to know and cannot leak what it was never told
 - what to reply with: what was built, honest remaining mismatches, TODOs left
 
 Give builders the observed pattern for their motion when the spec is not ready (e.g. "cards stagger in with y 89/119/149, opacity .001 to 1") so their layout leaves the right hooks; the motion pass replaces the values.
@@ -32,6 +33,10 @@ Give builders the observed pattern for their motion when the spec is not ready (
 - Overload (529) on every builder: resume each agent by id (SendMessage keeps its context), back off 2 to 5 minutes between rounds, then relaunch on another model (opus, then sonnet). Sonnet builders finished about/articles/contact to within tens of px; the main agent closed the rest with boxes / refboxes.
 - While builders are down, build the most valuable page yourself. Do not idle.
 - A builder that "finished" with heights off by more than a few px gets a follow-up message with the exact section table (ref vs build per width) and the boxes method, not a rebuild.
+
+## Origin blackout across agents
+
+The reference on disk is already scrubbed, so a builder that only reads `spec/`, `capture/` and `motion/` cannot leak. Leaks come from the orchestrator: a url pasted into a prompt, a section named after the source, a commit message saying what was cloned. Keep the url out of every prompt (rigs take `"$(1to1 origin <ref> --url)"`), and run `1to1 blackout <project>` after integrating each round of builders rather than only at the end, so a bad habit is caught in one file instead of twelve.
 
 ## Concurrency hazards
 

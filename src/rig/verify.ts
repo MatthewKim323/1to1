@@ -7,6 +7,7 @@
  *   3. --diff: stitched full-page pixel diff per section vs capture/<vp>/full.png (informational; text AA and mid-spring
  *      captures make a nonzero % normal, so it is reported but does not fail the gate)
  *   4. console: zero errors / page errors while scrolling the build
+ *   5. origin blackout: nothing in the project names the source (`1to1 blackout`); --no-blackout skips it
  * Writes <out>/verify.json and prints a table. Exit code 1 on FAIL. This is what the /goal condition should point at.
  */
 import fs from 'node:fs';
@@ -14,11 +15,12 @@ import path from 'node:path';
 import { Args, usage } from '../lib/args.ts';
 import { launch, newCtx, load, reveal, measureSections, stitchFullPage, viewportByWidth, VIEWPORTS, log } from '../lib/browser.ts';
 import { runDiff } from './diff.ts';
+import { runBlackout } from './blackout.ts';
 
 export async function runVerify(argv: string[]) {
   const a = new Args(argv);
   const [url, ref] = a.positional;
-  if (!url || !ref) usage('usage: 1to1 verify <buildUrl> <reference/name> [--w 1440,1024,810,390] [--tolerance 0] [--diff] [--out dir]');
+  if (!url || !ref) usage('usage: 1to1 verify <buildUrl> <reference/name> [--w 1440,1024,810,390] [--tolerance 0] [--diff] [--out dir] [--project .] [--no-blackout]');
   const reportFile = path.join(ref, 'capture', 'report.json');
   if (!fs.existsSync(reportFile)) usage(`no ${reportFile}. run: 1to1 capture <url> --only static`);
   const rep = JSON.parse(fs.readFileSync(reportFile, 'utf8')).report;
@@ -69,6 +71,13 @@ export async function runVerify(argv: string[]) {
     await ctx.close();
   }
   await browser.close();
+  if (!a.flag('no-blackout')) {
+    console.log('\n== origin blackout');
+    const clean = runBlackout([a.str('project', process.cwd()), '--ref', path.resolve(ref)]);
+    result.blackout = clean;
+    result.pass &&= clean;
+    process.exitCode = undefined;   // the gate below owns the exit code
+  }
   fs.writeFileSync(path.join(outDir, 'verify.json'), JSON.stringify(result, null, 1));
   console.log(`\n${result.pass ? 'PASS' : 'FAIL'} -> ${path.join(outDir, 'verify.json')}`);
   if (!result.pass) process.exitCode = 1;

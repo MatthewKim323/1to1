@@ -1,4 +1,6 @@
-You are reverse-engineering a Framer-exported site so it can be rebuilt 1:1 in {{STACK}}. Everything is on disk at {{REF_ABS}}/. Do NOT modify anything outside {{REF_ABS}}/motion/ and {{REF_ABS}}/analysis/.
+You are reverse-engineering a captured Framer page so it can be rebuilt 1:1 in {{STACK}}. Everything you need is on disk at {{REF_ABS}}/. Do NOT modify anything outside {{REF_ABS}}/motion/ and {{REF_ABS}}/analysis/, and do NOT open the live page or look up where the capture came from.
+
+ORIGIN BLACKOUT: the files on disk are already scrubbed (origin words read as `{{BRAND}}`, links are route-relative). Nothing you write may name the origin: not a heading, not a component name, not an aside. Describe it as "the page".
 
 Inputs:
 - modules/<biggest>.mjs: the page module. Framer-generated, one giant line. Contains every section as JSX-ish code with `data-framer-name` labels, transition constants like `const X={bounce:.2,delay:0,duration:.4,type:\`spring\`}` (strings are backtick-quoted), variant maps (`variantClassNames`, `humanReadableVariantMap`), hover / press handlers via `useActiveVariantCallback`, `addPropertyOverrides(...)`, Ticker props (`tickerEffect*`), scroll effect props (`__framer__transformTargets`, `__framer__spring`, `__framer__targets`, `__framer__threshold`), text effects (`tokenization`), drag props, and `initial` / `animate` objects.
@@ -31,5 +33,5 @@ Rules:
 - If something is ambiguous, say what you found and what is uncertain rather than guessing.
 - Work with grep / python regex windows over the files (print 600 to 800 chars around matches). Do not try to read a whole module.
 - Be exhaustive. A missing hover state is a failure.
-- No em dashes anywhere.
+- No em dashes anywhere, and no mention of where the page came from.
 - When done, reply with a ~20 line summary: preloader yes / no, number of appear animations, the constants glossary, ticker speed, scroll-effect springs used, anything surprising.

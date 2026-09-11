@@ -26,6 +26,7 @@ import type { Browser, BrowserContext, Page, CDPSession } from 'playwright';
 import { Args, usage } from './lib/args.ts';
 import { VIEWPORTS, newCtx, load, reveal, revealPass, stitchFullPage, cropFromFull, LAYOUT_JS, detectSections, type Section, log, sleep, withTimeout, closeCtx, BrowserPool, guard } from './lib/browser.ts';
 import { slugFromUrl } from './extract.ts';
+import { neutralAssetName, originTokens, readOrigin, scrub, writeOrigin, brandFor } from './lib/anon.ts';
 
 const DSF = 2;
 const MAX_FRAMES = 400;
@@ -37,8 +38,15 @@ export async function runCapture(argv: string[]) {
   const a = new Args(argv);
   const URL = a.positional[0];
   if (!URL) usage('usage: 1to1 capture <url> [--out reference] [--name slug] [--only static,frames,assets,rediff] [--viewports 1440,1024,810,390] [--max-hovers 10] [--hovers file.json] [--no-scroll-frames] [--frame-dsf 1]');
-  const name = a.str('name') ?? slugFromUrl(URL);
-  const OUT = path.join(process.cwd(), a.str('out', 'reference'), name, 'capture');
+  const name = a.str('name') ?? slugFromUrl(URL, a.str('out', 'reference'));
+  const REF = path.join(process.cwd(), a.str('out', 'reference'), name);
+  const OUT = path.join(REF, 'capture');
+  // Origin blackout: anything written here that could carry the source's name goes through `anon`.
+  const origin = readOrigin(REF);
+  const TOKENS = origin?.tokens ?? originTokens(URL, undefined, a.list('tokens'));
+  const BRAND = origin?.brand ?? brandFor(process.cwd(), a.str('brand'));
+  if (!origin) writeOrigin(REF, { url: URL, host: new globalThis.URL(URL).hostname, tokens: TOKENS, brand: BRAND, capturedAt: new Date().toISOString() });
+  const clean = (t: string) => scrub(t, TOKENS, BRAND);
   const ONLY = a.list('only');
   const want = (k: string) => !ONLY.length || ONLY.includes(k);
   const widths = a.list('viewports').map(Number);
@@ -81,12 +89,13 @@ export async function runCapture(argv: string[]) {
           const body = await withTimeout(res.body(), 20_000, `asset body ${u.slice(-40)}`);
           if (!body) throw new Error('no body');
           const parsed = new globalThis.URL(u);
-          let base = path.basename(parsed.pathname) || 'index';
-          if (!/\.[a-z0-9]{2,5}$/i.test(base)) {
-            const ext = ct.split('/')[1]?.split(';')[0]?.replace('svg+xml', 'svg').replace('jpeg', 'jpg');
-            if (ext) base += '.' + ext;
+          let ext = (path.extname(parsed.pathname) || '').toLowerCase();
+          if (!/^\.[a-z0-9]{2,5}$/i.test(ext)) {
+            const fromType = ct.split('/')[1]?.split(';')[0]?.replace('svg+xml', 'svg').replace('jpeg', 'jpg');
+            ext = fromType ? '.' + fromType.replace(/[^a-z0-9]/g, '') : '';
           }
-          const file = `${createHash('sha1').update(u).digest('hex').slice(0, 10)}-${base}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+          const bucket = ct.startsWith('video/') ? 'videos' : ct.startsWith('font/') || /\.(woff2?|ttf|otf)$/i.test(ext) ? 'fonts' : ct.startsWith('audio/') ? 'audio' : ct.startsWith('image/') ? 'images' : 'data';
+          const file = neutralAssetName(createHash('sha1').update(u).digest('hex').slice(0, 10), ext, bucket);
           fs.writeFileSync(path.join(assetsDir, file), body);
           manifest[u] = { file, contentType: ct, bytes: body.length };
         } catch {
@@ -131,7 +140,10 @@ export async function runCapture(argv: string[]) {
       vpReport.layoutElements = layout.length;
       log(`  layout.json (${layout.length} elements)`);
 
-      const { mode, sections } = await detectSections(page);
+      const detected = await detectSections(page);
+      const mode = detected.mode;
+      // section names become component names in the rebuild, so they never carry the origin
+      const sections = detected.sections.map((sec) => ({ ...sec, name: clean(sec.name), slug: clean(sec.slug) }));
       vpReport.sectionMode = mode;
       report.sections[vp.name] = sections;
       const sdir = path.join(dir, 'sections');
@@ -488,7 +500,7 @@ export async function runCapture(argv: string[]) {
   function writeReadme() {
     for (const n of Object.keys(report.scenarios)) if (!fs.existsSync(path.join(OUT, 'frames', n, 'frames.json'))) delete report.scenarios[n];
     const L: string[] = [];
-    L.push(`# capture: ${name}`, '', `Source: ${URL}`, `Captured: ${new Date().toISOString()}`, `Rig: 1to1 capture (Playwright ${require('playwright/package.json').version}, headless Chromium, UA spoofed, reducedMotion=no-preference)`, '');
+    L.push(`# capture: ${name}`, '', `Captured: ${new Date().toISOString()} (source url in ../.origin.json; never repeat it in the rebuild)`, `Rig: 1to1 capture (Playwright ${require('playwright/package.json').version}, headless Chromium, UA spoofed, reducedMotion=no-preference)`, '');
     L.push(`## Viewports (deviceScaleFactor ${DSF})`, '', '| name | size | doc height | layout elements | reveal method | unrevealed |', '|---|---|---|---|---|---|');
     for (const [n, v] of Object.entries<any>(report.viewports)) L.push(`| ${n} | ${v.width}x${v.height} | ${v.docHeight ?? '?'} | ${v.layoutElements ?? '?'} | ${v.revealMethod ?? '?'} | ${v.unrevealed ?? '?'} |`);
     L.push('', 'Per viewport: `<vp>/full.png` (revealed full page), `<vp>/layout.json` (flat array: path/tag/class/framerName/appearId/text/rect(page coords)/computed styles/media), `<vp>/unrevealed.json`, `<vp>/sections/NN-<name>.png`.', '');
@@ -514,7 +526,7 @@ export async function runCapture(argv: string[]) {
       if (fs.existsSync(f)) { const u = JSON.parse(fs.readFileSync(f, 'utf8')); if (u.length) { any = true; L.push(`- ${n}: ${u.length}: ${u.map((x: any) => `${x.tag}[${x.appearId}]${x.name ? ' "' + x.name + '"' : ''} y=${x.y} opacity=${x.opacity}`).join('; ')}`); } }
     }
     if (!any) L.push('None. Every element with data-framer-appear-id ended at computed opacity >= 0.9 in every viewport.');
-    L.push('', '## Assets', '', `${Object.keys(manifest).length} unique URLs intercepted -> \`assets/<sha1(url)[0:10]>-<basename>\`, map in \`assets/manifest.json\` (analytics excluded; bytes=-1 had no readable body).`, '');
+    L.push('', '## Assets', '', `${Object.keys(manifest).length} unique URLs intercepted -> \`assets/<img|vid|font|audio|data>-<sha1(url)[0:10]>.<ext>\` (content addressed: the origin's own filenames are dropped), map in \`assets/manifest.json\` (analytics excluded; bytes=-1 had no readable body).`, '');
     L.push('## Caveats', '',
       '- Full pages are scroll-and-stitch. captureBeyondViewport resizes the viewport to the content height, which re-lays-out vh sections and fires IntersectionObservers, so it is not used. Sticky / scroll-linked sections show the state at each chunk\'s scroll offset; use the scroll-* frame sequences for their true motion.',
       `- Screencast frames are ${FRAME_DSF}x (--frame-dsf). PNG at ${DESKTOP.width}x${DESKTOP.height} yields ~30-60 fps of changed frames.`,
