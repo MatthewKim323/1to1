@@ -93,5 +93,8 @@ reference/site[-route]/
 - Canvas / WebGL is captured as frames and the drawing code is located in the modules; porting it is still your job (the footer shader took reading the runtime's texture loader to get right).
 - Sites that gate by user agent or geography may not capture cleanly.
 - Frames are recorded at desktop only. Add hover targets with `--hovers file.json` when auto-detection misses a component.
+- Origin blackout covers words and links, not pictures: a logo, wordmark or screenshot asset still shows the origin, so treat those as placeholders.
+- Blackout rewrites visible copy too (the hero says your brand, not theirs). That is the point, but it means the text is not byte-identical to the source where the name appeared.
+- `dom/full.html` keeps third-party inline scripts as captured, and those can carry the host in escaped form (`\x3dframer.com` in an analytics blob). The tree, the spec and everything a builder copies from are clean; the raw html is evidence, not material.
 
 MIT

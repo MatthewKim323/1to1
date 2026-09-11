@@ -63,6 +63,7 @@ export function originTokens(url: string, title?: string, extra: string[] = []):
   const brand = hostBrand(new URL(url).hostname);
   const tok = new Set<string>();
   const add = (s: string) => { const v = s.toLowerCase().trim(); if (v.length >= 3 && !GENERIC.has(v) && /[a-z]/.test(v)) tok.add(v); };
+  add(new URL(url).hostname.replace(/^www\./, ''));   // the bare hostname is a mention too, wherever it is written
   add(brand);
   add(brand.replace(/[^a-z0-9]+/g, ''));
   for (const p of parts(brand)) add(p);
@@ -132,11 +133,14 @@ export function delink(value: string, host: string): string {
   } catch { return value; }
 }
 
-/** Every absolute link back to the origin becomes route-relative, in html, css url() or module source. */
+/**
+ * Every absolute link back to the origin becomes route-relative, in html, css url() or module source.
+ * Subdomains count (`updates.<host>`, `cdn.<host>`): they name the origin just as loudly as the apex does.
+ */
 export function delinkAll(text: string, host: string): string {
   if (!host) return text;
   const h = host.replace(/^www\./, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return text.replace(new RegExp(`https?://(?:www\\.)?${h}(/[^\\s"'\`<>)]*)?`, 'gi'), (_m, p) => p || '/');
+  return text.replace(new RegExp(`https?://(?:[A-Za-z0-9-]+\\.)*${h}(/[^\\s"'\`<>)]*)?`, 'gi'), (_m, p) => p || '/');
 }
 
 /**
@@ -144,8 +148,22 @@ export function delinkAll(text: string, host: string): string {
  * origin words become the rebuild's brand. base64 payloads are skipped: a letter run inside one can look like
  * a token and rewriting it would corrupt the asset.
  */
+/**
+ * A bare hostname is a mention even when it is not a link: plain text, or another service's url with the
+ * origin's domain in its path. Rewrite it to the same shape with the brand label swapped in
+ * (`framer.com` -> `aurora.com`, `acme.framer.website` -> `aurora.framer.website`), subdomains kept.
+ */
+export function dehost(text: string, host: string, brand: string): string {
+  if (!host) return text;
+  const bare = host.replace(/^www\./, '');
+  const label = hostBrand(bare).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const replacement = bare.replace(new RegExp(`(?<![A-Za-z0-9-])${label}(?![A-Za-z0-9-])`, 'i'), brand.toLowerCase());
+  const h = bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`(?<![A-Za-z0-9-])((?:[A-Za-z0-9-]+\\.)*)${h}(?![A-Za-z0-9-])`, 'gi'), (_m, sub) => sub + replacement);
+}
+
 export function scrubSource(text: string, tokens: string[], brand: string, host = ''): string {
-  return delinkAll(text, host)
+  return dehost(delinkAll(text, host), host, brand)
     .split(/(data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/gi)
     .map((chunk, i) => (i % 2 ? chunk : scrub(chunk, tokens, brand)))
     .join('');
@@ -192,7 +210,8 @@ export function readOrigin(refDir: string): Origin | null {
 /** Tokens for a reference dir, plus any passed on the command line. Empty list = nothing to blackout. */
 export function tokensFor(refDir: string, extra: string[] = []): { tokens: string[]; brand: string; host: string } {
   const o = readOrigin(refDir);
-  const tokens = new Set<string>(o?.tokens ?? []);
+  // re-derive alongside what was stored, so a reference dir captured by an older version still scans correctly
+  const tokens = new Set<string>([...(o?.tokens ?? []), ...(o ? originTokens(o.url, o.title) : [])]);
   for (const e of extra) for (const t of originTokens('https://example.com', undefined, [e])) tokens.add(t);
   return { tokens: [...tokens].sort((a, b) => b.length - a.length), brand: o?.brand ?? 'brand', host: o?.host ?? '' };
 }
