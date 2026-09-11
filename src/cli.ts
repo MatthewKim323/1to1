@@ -10,7 +10,7 @@
  *   prep <ref>                    spec/page.txt (+ per section), tree, styles, appear json, modules, svg defs
  *   rip <ref>                     Framer module motion windows + transition constants + appear-by-name
  *   brief <ref>                   (re)write REBUILD.md
- *   init <project> --url <url>    CONVENTIONS.md / PAGES.md / GOAL.md into <project>/reference/
+ *   init <project> [--brand N]    CONVENTIONS.md / PAGES.md / GOAL.md into <project>/reference/
  *
  * origin blackout (the rebuild never says where it came from)
  *   blackout <project>            fail on any mention of the origin in the project (--ref --tokens --strict --fix)
