@@ -261,9 +261,25 @@ export function scanLeaks(projectDir: string, tokens: string[], opts: { strict?:
     if (!TEXT_EXT.has(path.extname(file))) continue;
     let body: string;
     try { const st = fs.statSync(file); if (st.size > 2_000_000) continue; body = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    const isHtml = /\.html?$/.test(file);
     body.split('\n').forEach((line, i) => {
       const t = hasToken(line, tokens);
       if (!t) return;
+      if (isHtml) {
+        // markup is often one long line: classify each hit by where it sits. Inside a tag (an attribute, a
+        // link, a class) it is a leak; between tags it is display copy.
+        for (const tok of tokens) {
+          for (const m of line.matchAll(tokenRe(tok))) {
+            const at = m.index ?? 0;
+            let inTag = line.lastIndexOf('<', at) > line.lastIndexOf('>', at);
+            // display-text attribute values (labels, titles, alt text) are copy, not markup
+            if (inTag && /(?:aria-label|title|alt|placeholder)="[^"]*$/.test(line.slice(line.lastIndexOf('<', at), at))) inTag = false;
+            const kind: Leak['kind'] = inTag || opts.strict ? 'leak' : 'copy';
+            leaks.push({ file: rel, line: i + 1, token: tok, kind, text: line.slice(Math.max(0, at - 60), at + 60).trim() });
+          }
+        }
+        return;
+      }
       const isCopy = !COMMENT.test(line) && !CODE_CONTEXT.test(line) && /[>"'`]/.test(line);
       leaks.push({ file: rel, line: i + 1, token: t, kind: isCopy && !opts.strict ? 'copy' : 'leak', text: line.trim().slice(0, 160) });
     });
