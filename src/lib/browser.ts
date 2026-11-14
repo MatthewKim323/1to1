@@ -230,7 +230,7 @@ export async function stitchFullPage(page: Page, vpW: number, vpH: number, file:
       comps.push({ input: await sharp(p.buf).extract({ left: 0, top: 0, width: W, height: keep }).png().toBuffer(), top: p.top, left: 0 });
     } else comps.push({ input: p.buf, top: p.top, left: 0 });
   }
-  await sharp({ create: { width: W, height: H, channels: 4, background: opts.background ?? '#ffffff' } })
+  await sharp({ create: { width: W, height: H, channels: 4, background: opts.background ?? '#ffffff' }, limitInputPixels: false })
     .composite(comps)
     .png()
     .toFile(file);
@@ -238,13 +238,13 @@ export async function stitchFullPage(page: Page, vpW: number, vpH: number, file:
 }
 
 export async function cropFromFull(fullFile: string, clip: { x: number; y: number; width: number; height: number }, file: string, dsf: number) {
-  const meta = await sharp(fullFile).metadata();
+  const meta = await sharp(fullFile, { limitInputPixels: false }).metadata();
   const left = Math.max(0, Math.round(clip.x * dsf));
   const top = Math.max(0, Math.round(clip.y * dsf));
   const width = Math.min(meta.width! - left, Math.round(clip.width * dsf));
   const height = Math.min(meta.height! - top, Math.round(clip.height * dsf));
   if (width <= 0 || height <= 0) throw new Error(`crop outside image: ${JSON.stringify(clip)}`);
-  await sharp(fullFile).extract({ left, top, width, height }).png().toFile(file);
+  await sharp(fullFile, { limitInputPixels: false }).extract({ left, top, width, height }).png().toFile(file);
 }
 
 /** Every visible element with its page rect and the computed styles that decide layout. THE box truth. */

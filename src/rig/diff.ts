@@ -21,7 +21,7 @@ export async function runDiff(argv: string[]) {
     const secs = rep.sections?.[a.str('vp', 'desktop')] as any[] | undefined;
     if (secs) ranges = secs.map((s, i) => [`${String(i).padStart(2, '0')}-${s.slug}`, s.y, s.y + s.h]);
   }
-  const B = sharp(buildFile), R = sharp(refFile);
+  const B = sharp(buildFile, { limitInputPixels: false }), R = sharp(refFile, { limitInputPixels: false });
   const bm = await B.metadata(), rm = await R.metadata();
   console.log(`build ${bm.width}x${bm.height}  ref ${rm.width}x${rm.height}  (2x: ${bm.height! / S} vs ${rm.height! / S} css px)`);
   if (!ranges) ranges = [['page', 0, Math.min(bm.height!, rm.height!) / S]];
@@ -30,7 +30,7 @@ export async function runDiff(argv: string[]) {
   for (const [name, y0, y1] of ranges) {
     const top = Math.round(y0 * S), h = Math.round((y1 - y0) * S);
     if (top + h > bm.height! || top + h > rm.height!) { console.log(`${name}: out of range (build h ${bm.height! / S}, ref h ${rm.height! / S})`); continue; }
-    const [bRaw, rRaw] = await Promise.all([sharp(buildFile).extract({ left: 0, top, width: W, height: h }).removeAlpha().raw().toBuffer(), sharp(refFile).extract({ left: 0, top, width: W, height: h }).removeAlpha().raw().toBuffer()]);
+    const [bRaw, rRaw] = await Promise.all([sharp(buildFile, { limitInputPixels: false }).extract({ left: 0, top, width: W, height: h }).removeAlpha().raw().toBuffer(), sharp(refFile, { limitInputPixels: false }).extract({ left: 0, top, width: W, height: h }).removeAlpha().raw().toBuffer()]);
     const mask = Buffer.alloc(W * h);
     let n = 0;
     for (let i = 0, p = 0; i < bRaw.length; i += 3, p++) {
@@ -44,8 +44,8 @@ export async function runDiff(argv: string[]) {
     // sharp applies resize before composite inside one pipeline, so composite first, then downscale in a second pass
     const sheet = await sharp({ create: { width: W * 3 + gap * 2, height: h, channels: 3, background: '#ff00ff' } })
       .composite([
-        { input: await sharp(buildFile).extract({ left: 0, top, width: W, height: h }).png().toBuffer(), left: 0, top: 0 },
-        { input: await sharp(refFile).extract({ left: 0, top, width: W, height: h }).png().toBuffer(), left: W + gap, top: 0 },
+        { input: await sharp(buildFile, { limitInputPixels: false }).extract({ left: 0, top, width: W, height: h }).png().toBuffer(), left: 0, top: 0 },
+        { input: await sharp(refFile, { limitInputPixels: false }).extract({ left: 0, top, width: W, height: h }).png().toBuffer(), left: W + gap, top: 0 },
         { input: maskPng, left: 2 * W + 2 * gap, top: 0 },
       ])
       .png()
