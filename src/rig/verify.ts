@@ -39,7 +39,13 @@ export async function runVerify(argv: string[]) {
     const ctx = await newCtx(browser, vp, 2);
     const page = await ctx.newPage();
     const errors: string[] = [];
-    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text().slice(0, 160)); });
+    page.on('console', (m) => {
+      if (m.type() !== 'error') return;
+      // a not-found page reports its own 404 status: that is the page doing its job, not an error on it
+      const loc = m.location()?.url ?? '';
+      if (/status of 404/.test(m.text()) && loc && new URL(loc).pathname === new URL(page.url() || url).pathname) return;
+      errors.push(m.text().slice(0, 160));
+    });
     page.on('pageerror', (e) => errors.push('pageerror: ' + e.message.slice(0, 160)));
     await load(page, url, a.num('wait', 2500));
     await reveal(page);
