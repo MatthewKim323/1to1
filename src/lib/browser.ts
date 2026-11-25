@@ -38,6 +38,8 @@ export async function closeCtx(ctx: BrowserContext, ms = 15_000) {
 export const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 23), ...a);
 
 export async function launch(headless = true): Promise<Browser> {
+  // ONETOONE_HEADED=1 opens every rig window so a person can answer a human check the site shows
+  if (process.env.ONETOONE_HEADED === '1') headless = false;
   const b = await chromium.launch({ headless, args: ['--disable-blink-features=AutomationControlled'] });
   b.on('disconnected', () => log('  browser disconnected'));
   return b;
@@ -88,7 +90,10 @@ const CONSENT_HOSTS = /(ketchcdn|ketchjs|cookielaw|onetrust|cookiebot|trustarc|u
 const CONSENT_CSS = '#lanyard_root,#onetrust-consent-sdk,#CybotCookiebotDialog,#usercentrics-root,#didomi-host,.osano-cm-window,#ketch-consent-banner,[id^="ketch-"],#fides-overlay,#fides-modal,.fides-banner,#fides-embed-container{display:none!important}';
 
 export async function newCtx(browser: Browser, vp: { width: number; height: number }, dsf = 2): Promise<BrowserContext> {
+  const state = process.env.ONETOONE_STATE;
+  const fs = await import('node:fs');
   const ctx = await browser.newContext({
+    ...(state && fs.existsSync(state) ? { storageState: state } : {}),
     viewport: { width: vp.width, height: vp.height },
     deviceScaleFactor: dsf,
     userAgent: UA,
@@ -103,6 +108,30 @@ export async function newCtx(browser: Browser, vp: { width: number; height: numb
   return ctx;
 }
 
+/** Interstitials that ask a person to prove they are human. The rig never answers them; it waits for the person. */
+const HUMAN_CHECK = /checking your browser|verify you are human|are you a robot|just a moment|security check|attention required/i;
+
+/**
+ * If the page is a human check, wait (up to ONETOONE_HUMAN_WAIT_S, default 300s) for the person watching the headed
+ * window to complete it, then save the session to ONETOONE_STATE so the next windows of the same run reuse it.
+ */
+export async function waitForHuman(page: Page) {
+  const isCheck = async () => HUMAN_CHECK.test((await page.title().catch(() => '')) || '');
+  if (!(await isCheck())) return;
+  const limit = Number(process.env.ONETOONE_HUMAN_WAIT_S || 300) * 1000;
+  log('  HUMAN CHECK on screen: complete it in the browser window, waiting up to ' + Math.round(limit / 1000) + 's');
+  const t0 = Date.now();
+  while (Date.now() - t0 < limit) {
+    await page.waitForTimeout(1000);
+    if (!(await isCheck())) break;
+  }
+  if (await isCheck()) { log('  human check still showing, continuing anyway'); return; }
+  await page.waitForLoadState('load', { timeout: 30_000 }).catch(() => {});
+  log('  human check cleared after ' + Math.round((Date.now() - t0) / 1000) + 's');
+  const state = process.env.ONETOONE_STATE;
+  if (state) await page.context().storageState({ path: state }).catch(() => {});
+}
+
 /** Navigate, wait for network idle plus a settle for preloaders / hero appears, disable CSS smooth scroll. */
 export async function load(page: Page, url: string, settleMs = 2500) {
   await page.goto(url, { waitUntil: 'load', timeout: 60_000 }).catch(async () => {
@@ -110,6 +139,7 @@ export async function load(page: Page, url: string, settleMs = 2500) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await page.waitForTimeout(3000);
   });
+  await waitForHuman(page);
   // sites with analytics beacons never go network-idle; cap the wait instead of burning a minute per load
   await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
   await page.waitForTimeout(settleMs);
@@ -349,6 +379,7 @@ export async function detectSections(page: Page): Promise<{ mode: string; sectio
 /** Top-level blocks of a page (same rule as the reference capture, so build and reference are measured identically). Used by `heights` and `verify`. */
 export async function measureSections(page: Page) {
   const res = (await page.evaluate(SECTIONS_JS)) as { sections: { y: number; h: number; name: string }[] };
-  const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  // same formula as the capture's stitchFullPage, so both sides of the gate round the document the same way
+  const docHeight = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight));
   return { sections: res.sections.map((s) => ({ y: s.y, h: s.h, name: s.name.slice(0, 40) })), docHeight };
 }

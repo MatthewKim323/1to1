@@ -12,7 +12,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export type Origin = { url: string; host: string; title?: string; tokens: string[]; brand: string; capturedAt: string };
+/** `allow`: ordinary words the origin's title happens to contain ("shining" on a site called Shining Star) that its copy uses as plain words; never banned on their own, the brand phrase still is. */
+export type Origin = { url: string; host: string; title?: string; tokens: string[]; brand: string; capturedAt: string; allow?: string[] };
 
 /** Hosting suffixes that say nothing about the site; stripped before the brand is read off the hostname. */
 const PLATFORM_SUFFIXES = [
@@ -70,7 +71,11 @@ export function originTokens(url: string, title?: string, extra: string[] = []):
   // the bare hostname carries subdomains (pos., app., shop.): a title word that only prefixes it is vocabulary, not brand
   const own = [...tok].filter((t) => !t.includes('.'));
   for (const w of parts(title || '')) if (own.some((t) => w === t || t.startsWith(w) || (w.startsWith(t) && w !== t + 's'))) add(w); // a plain plural of the brand word is the ordinary noun
-  for (const e of extra) { add(e); for (const p of parts(e)) add(p); }
+  // a multi-word extra ("north star") is a phrase: banned whole, glued and kebab-cased, without banning each common word
+  for (const e of extra) {
+    if (/\s/.test(e.trim())) { add(e.trim().replace(/\s+/g, ' ')); add(e.replace(/\s+/g, '')); add(e.trim().replace(/\s+/g, '-')); continue; }
+    add(e); for (const p of parts(e)) add(p);
+  }
   return [...tok].sort((a, b) => b.length - a.length);
 }
 
@@ -213,6 +218,7 @@ export function tokensFor(refDir: string, extra: string[] = []): { tokens: strin
   const o = readOrigin(refDir);
   // re-derive alongside what was stored, so a reference dir captured by an older version still scans correctly
   const tokens = new Set<string>([...(o?.tokens ?? []), ...(o ? originTokens(o.url, o.title) : [])]);
+  for (const w of o?.allow ?? []) tokens.delete(w.toLowerCase());
   for (const e of extra) for (const t of originTokens('https://example.com', undefined, [e])) tokens.add(t);
   return { tokens: [...tokens].sort((a, b) => b.length - a.length), brand: o?.brand ?? 'brand', host: o?.host ?? '' };
 }
