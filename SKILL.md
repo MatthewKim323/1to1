@@ -93,6 +93,15 @@ A height delta is never "close enough". Find the element with `boxes` vs `refbox
 ### 7. Ship
 `bunx tsc --noEmit`, `next build`, `1to1 console` on every route, `1to1 blackout .` CLEAN, final `1to1 verify` table for every route. Report honestly: what matches, what does not, what was not checked. Say it in origin-blind terms, and call out any placeholder logo or wordmark asset the user still has to replace.
 
+### 8. Harvest into the design vault
+When the ship step is done, the rebuild becomes design-system material. Register it and plan the harvest:
+
+```bash
+/Volumes/Vault/dev/design/vault/bin/vault ingest <project>
+```
+
+That writes `design/vault/harvest/<name>.plan.md` (batches of components + the harvester prompt). Follow the `design-vault` skill's growth loop: one harvester agent per batch, then `vault fix && vault lint && vault index`, then the DNA re-distill. The cards it produces are origin-blind like everything else here; the lint enforces it with the same `.origin.json` deny list.
+
 ## Behaviours
 
 - Headed browser by default for `clone` / `extract` so the user sees it work. Everything else headless.

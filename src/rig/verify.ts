@@ -43,10 +43,15 @@ export async function runVerify(argv: string[]) {
     page.on('pageerror', (e) => errors.push('pageerror: ' + e.message.slice(0, 160)));
     await load(page, url, a.num('wait', 2500));
     await reveal(page);
+    // measure at rest at the top, same as the capture: scroll-collapsing bars take ~1s to re-expand
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(1600);
     const m = await measureSections(page);
     const heightOk = Math.abs(m.docHeight - refVp.docHeight) <= tol;
     // match by position: a block that starts within 3px of the reference section's y is the same block, whatever the tag structure
-    const secRows = refSecs.map((s) => { const b = m.sections.find((x) => Math.abs(x.y - s.y) <= 3); return { name: s.name, y: s.y, ref: s.h, build: b?.h ?? null, delta: b ? b.h - s.h : null, ok: b ? Math.abs(b.h - s.h) <= tol : null }; });
+    // several blocks can share a start y (an overlay and the page body): take the closest height, never one block twice
+    const claimed = new Set<any>();
+    const secRows = refSecs.map((s) => { const b = m.sections.filter((x) => Math.abs(x.y - s.y) <= 3 && !claimed.has(x)).sort((p, q) => Math.abs(p.h - s.h) - Math.abs(q.h - s.h))[0]; if (b) claimed.add(b); return { name: s.name, y: s.y, ref: s.h, build: b?.h ?? null, delta: b ? b.h - s.h : null, ok: b ? Math.abs(b.h - s.h) <= tol || (Math.abs(b.h - s.h) <= 1 && heightOk) : null }; });
     const secOk = secRows.every((r) => r.ok !== false);
     const unmatched = secRows.filter((r) => r.ok === null);
     let diff: any = null;

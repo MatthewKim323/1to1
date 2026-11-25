@@ -85,7 +85,8 @@ export async function runExtract(argv: string[]) {
   log('phase 6: revealed full pages');
   const heights: Record<string, number> = {};
   const errors: string[] = [];
-  for (const vp of vps) {
+  // ONETOONE_SKIP_FULL=1: callers that only need the capture stage's measurements skip these preview screenshots
+  for (const vp of process.env.ONETOONE_SKIP_FULL === '1' ? [] : vps) {
     const g = await guard(`full page ${vp.name}`, a.num('viewport-timeout', 6 * 60) * 1000, async () => {
       const b = await pool.get();
       const c = await newCtx(b, vp, 2);
@@ -317,9 +318,12 @@ export function attachAssets(page: Page, outDir: string, shared?: Collector): Co
     pending.push((async () => {
       const buf = await withTimeout(response.body(), 20_000, 'asset body');
       if (!buf) return;
-      const ext = extname(new URL(url).pathname).toLowerCase() || ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/avif': '.avif', 'image/gif': '.gif', 'image/svg+xml': '.svg', 'video/mp4': '.mp4', 'video/webm': '.webm', 'font/woff2': '.woff2', 'font/woff': '.woff' } as Record<string, string>)[mime] || '';
+      // only a real extension counts: some cdn paths end in a long dotted token that would blow the file name limit
+      const pathExt = extname(new URL(url).pathname).toLowerCase();
+      const byMime = ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/avif': '.avif', 'image/gif': '.gif', 'image/svg+xml': '.svg', 'video/mp4': '.mp4', 'video/webm': '.webm', 'font/woff2': '.woff2', 'font/woff': '.woff' } as Record<string, string>)[mime];
+      const ext = /^\.[a-z0-9]{1,5}$/.test(pathExt) ? pathExt : byMime || '';
       const hash = createHash('sha1').update(url).digest('hex').slice(0, 10);
-      const file = neutralAssetName(hash, ext || extname(new URL(url).pathname).toLowerCase(), bucket);
+      const file = neutralAssetName(hash, ext, bucket);
       const dir = join(outDir, 'assets', bucket);
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, file), buf);

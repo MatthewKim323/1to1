@@ -83,8 +83,12 @@ export async function guard(label: string, ms: number, fn: () => Promise<unknown
   }
 }
 
+/** Consent managers paint an overlay over the page that is not part of the design; block them in every capture and rig. */
+const CONSENT_HOSTS = /(ketchcdn|ketchjs|cookielaw|onetrust|cookiebot|trustarc|usercentrics|didomi|osano|termly|iubenda|consentmanager|cookieyes|quantcast\.mgr|privacy-center|fides-cdn|ethyca)\./i;
+const CONSENT_CSS = '#lanyard_root,#onetrust-consent-sdk,#CybotCookiebotDialog,#usercentrics-root,#didomi-host,.osano-cm-window,#ketch-consent-banner,[id^="ketch-"],#fides-overlay,#fides-modal,.fides-banner,#fides-embed-container{display:none!important}';
+
 export async function newCtx(browser: Browser, vp: { width: number; height: number }, dsf = 2): Promise<BrowserContext> {
-  return browser.newContext({
+  const ctx = await browser.newContext({
     viewport: { width: vp.width, height: vp.height },
     deviceScaleFactor: dsf,
     userAgent: UA,
@@ -92,15 +96,22 @@ export async function newCtx(browser: Browser, vp: { width: number; height: numb
     colorScheme: 'light',
     locale: 'en-US',
   });
+  if (process.env.ONETOONE_KEEP_CONSENT !== '1') {
+    await ctx.route((u) => CONSENT_HOSTS.test(u.hostname), (r) => r.abort()).catch(() => {});
+    await ctx.addInitScript(`(() => { const add = () => { if (!document.head) return requestAnimationFrame(add); const s = document.createElement('style'); s.setAttribute('data-1to1','consent'); s.textContent = ${JSON.stringify(CONSENT_CSS)}; document.head.appendChild(s); }; add(); })()`).catch(() => {});
+  }
+  return ctx;
 }
 
 /** Navigate, wait for network idle plus a settle for preloaders / hero appears, disable CSS smooth scroll. */
 export async function load(page: Page, url: string, settleMs = 2500) {
-  await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(async () => {
-    log('  networkidle timeout, falling back to domcontentloaded');
+  await page.goto(url, { waitUntil: 'load', timeout: 60_000 }).catch(async () => {
+    log('  load timeout, falling back to domcontentloaded');
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await page.waitForTimeout(3000);
   });
+  // sites with analytics beacons never go network-idle; cap the wait instead of burning a minute per load
+  await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
   await page.waitForTimeout(settleMs);
   await page.evaluate(() => {
     document.documentElement.style.scrollBehavior = 'auto';
@@ -181,14 +192,20 @@ export const HIDE_FIXED_JS = `(() => {
   let n = 0;
   for (const e of document.querySelectorAll('body *')) {
     const cs = getComputedStyle(e);
-    if (cs.position === 'fixed' && cs.visibility !== 'hidden' && cs.display !== 'none') {
+    const fixed = cs.position === 'fixed';
+    // a stuck full-width sticky bar (site header) repaints in every chunk exactly like fixed chrome
+    let sticky = false;
+    if (cs.position === 'sticky') { const r0 = e.getBoundingClientRect(); sticky = r0.width >= innerWidth * 0.9 && r0.height > 0 && r0.height < innerHeight * 0.3 && Math.abs(r0.top - (parseFloat(cs.top) || 0)) < 2; }
+    if ((fixed || sticky) && cs.visibility !== 'hidden' && cs.display !== 'none') {
       const r = e.getBoundingClientRect(); if (!r.width || !r.height) continue;
-      e.setAttribute('data-rig-hidden', e.style.visibility || ''); e.style.visibility = 'hidden'; n++;
+      // viewport-sized fixed layers are scroll-pinned scenes (part of the page at every offset), not chrome
+      if (r.height >= innerHeight * 0.6 && r.width >= innerWidth * 0.6) continue;
+      e.setAttribute('data-rig-hidden', e.style.visibility || ''); e.setAttribute('data-rig-op', e.style.opacity || ''); e.style.visibility = 'hidden'; e.style.setProperty('transition', 'none', 'important'); e.style.setProperty('opacity', '0', 'important'); n++;
     }
   }
   return n;
 })()`;
-export const RESTORE_FIXED_JS = `(() => { for (const e of document.querySelectorAll('[data-rig-hidden]')) { e.style.visibility = e.getAttribute('data-rig-hidden'); e.removeAttribute('data-rig-hidden'); } })()`;
+export const RESTORE_FIXED_JS = `(() => { for (const e of document.querySelectorAll('[data-rig-hidden]')) { e.style.visibility = e.getAttribute('data-rig-hidden'); e.style.removeProperty('opacity'); e.style.removeProperty('transition'); if (e.getAttribute('data-rig-op')) e.style.opacity = e.getAttribute('data-rig-op'); e.removeAttribute('data-rig-hidden'); e.removeAttribute('data-rig-op'); } })()`;
 
 /**
  * Full page as scroll-and-stitch. Chromium's captureBeyondViewport resizes the viewport to the
@@ -197,6 +214,9 @@ export const RESTORE_FIXED_JS = `(() => { for (const e of document.querySelector
  * are hidden after the first chunk, like Chrome's own full-page capture.
  */
 export async function stitchFullPage(page: Page, vpW: number, vpH: number, file: string, dsf: number, opts: { chunkWaitMs?: number; wheelNudge?: boolean; background?: string } = {}) {
+  // measure at rest at the top: scroll-collapsing bars (announcement strips, shrinking headers) animate back over ~1s
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(1200);
   const docH = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight));
   const parts: { buf: Buffer; top: number }[] = [];
   let hiddenFixed = 0;

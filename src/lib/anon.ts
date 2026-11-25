@@ -67,8 +67,9 @@ export function originTokens(url: string, title?: string, extra: string[] = []):
   add(brand);
   add(brand.replace(/[^a-z0-9]+/g, ''));
   for (const p of parts(brand)) add(p);
-  const own = [...tok];
-  for (const w of parts(title || '')) if (own.some((t) => w === t || w.replace(/s$/, '') === t || t.startsWith(w) || w.startsWith(t))) add(w);
+  // the bare hostname carries subdomains (pos., app., shop.): a title word that only prefixes it is vocabulary, not brand
+  const own = [...tok].filter((t) => !t.includes('.'));
+  for (const w of parts(title || '')) if (own.some((t) => w === t || t.startsWith(w) || (w.startsWith(t) && w !== t + 's'))) add(w); // a plain plural of the brand word is the ordinary noun
   for (const e of extra) { add(e); for (const p of parts(e)) add(p); }
   return [...tok].sort((a, b) => b.length - a.length);
 }

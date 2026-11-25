@@ -27,7 +27,11 @@ export async function runConsole(argv: string[]) {
     const msgs: string[] = [];
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') msgs.push(`${m.type()}: ${m.text().slice(0, 200)}`); });
     page.on('pageerror', (e) => msgs.push(`pageerror: ${e.message.slice(0, 200)}`));
-    page.on('requestfailed', (q) => { if (!/analytics|events\./.test(q.url())) msgs.push(`requestfailed: ${q.url().slice(0, 160)}`); });
+    page.on('requestfailed', (q) => {
+      // the browser cancels media range requests once it has the metadata or the element pauses: not a failure
+      if (q.resourceType() === 'media' && /ERR_ABORTED/.test(q.failure()?.errorText ?? '')) return;
+      if (!/analytics|events\./.test(q.url())) msgs.push(`requestfailed: ${q.url().slice(0, 160)} ${q.failure()?.errorText ?? ''}`);
+    });
     const resp = await page.goto(base.replace(/\/$/, '') + r, { waitUntil: 'networkidle' }).catch(() => null);
     await page.waitForTimeout(1500);
     for (let i = 0; i < 30; i++) { await page.mouse.wheel(0, 500); await page.waitForTimeout(60); }
