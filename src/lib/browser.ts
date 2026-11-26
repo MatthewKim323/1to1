@@ -258,7 +258,15 @@ export async function stitchFullPage(page: Page, vpW: number, vpH: number, file:
       await page.mouse.wheel(0, 1);
     }
     await page.waitForTimeout(y === 0 ? Math.max(400, wait) : wait);
-    const actual = await page.evaluate(() => scrollY);
+    let actual = await page.evaluate(() => scrollY);
+    // a smooth scroller still easing out the previous nudge overrides scrollTo: retry until it sticks
+    const want = Math.min(y, docH - vpH);
+    for (let tries = 0; tries < 8 && Math.abs(actual - want) > 2; tries++) {
+      await page.waitForTimeout(400);
+      await page.evaluate((yy) => window.scrollTo(0, yy), y);
+      await page.waitForTimeout(150);
+      actual = await page.evaluate(() => scrollY);
+    }
     if (y > 0 && !hiddenFixed) {
       hiddenFixed = (await page.evaluate(HIDE_FIXED_JS)) as number;
       await page.waitForTimeout(50);
