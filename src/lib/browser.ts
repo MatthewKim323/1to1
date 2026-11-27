@@ -271,7 +271,15 @@ export async function stitchFullPage(page: Page, vpW: number, vpH: number, file:
       hiddenFixed = (await page.evaluate(HIDE_FIXED_JS)) as number;
       await page.waitForTimeout(50);
     }
-    const buf = await page.screenshot({ type: 'png', animations: 'allow', caret: 'hide' });
+    // only keep a chunk whose scroll offset held still while it was taken (smooth scrollers keep easing)
+    let buf = await page.screenshot({ type: 'png', animations: 'allow', caret: 'hide' });
+    for (let tries = 0; tries < 6; tries++) {
+      const after = await page.evaluate(() => scrollY);
+      if (Math.abs(after - actual) <= 0.5) break;
+      await page.waitForTimeout(300);
+      actual = await page.evaluate(() => scrollY);
+      buf = await page.screenshot({ type: 'png', animations: 'allow', caret: 'hide' });
+    }
     parts.push({ buf, top: Math.round(actual * dsf) });
   }
   await page.evaluate(RESTORE_FIXED_JS);
